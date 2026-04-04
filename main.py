@@ -11,7 +11,8 @@ from linebot.v3.messaging import (
 from linebot.v3.webhooks import (
     MessageEvent, AudioMessageContent, PostbackEvent, TextMessageContent
 )
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 
 app = Flask(__name__)
 
@@ -21,7 +22,7 @@ GEMINI_API_KEY = os.environ['GEMINI_API_KEY']
 
 configuration = Configuration(access_token=LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
-genai.configure(api_key=GEMINI_API_KEY)
+gemini_client = genai.Client(api_key=GEMINI_API_KEY)
 
 # 確認待ちの内容を一時保存
 pending = {}
@@ -87,10 +88,16 @@ def handle_audio(event):
 
     try:
         # Gemini Files APIにアップロードして文字起こし＋構造化
-        audio_file = genai.upload_file(path=audio_path, mime_type='audio/mp4')
-        model = genai.GenerativeModel('gemini-1.5-pro')
-        response = model.generate_content([audio_file, PROMPT])
-        genai.delete_file(audio_file.name)
+        with open(audio_path, 'rb') as f:
+            audio_file = gemini_client.files.upload(
+                file=f,
+                config=types.UploadFileConfig(mime_type='audio/mp4')
+            )
+        response = gemini_client.models.generate_content(
+            model='gemini-1.5-pro',
+            contents=[audio_file, PROMPT]
+        )
+        gemini_client.files.delete(name=audio_file.name)
 
         structured = response.text.strip()
         pending[user_id] = structured
