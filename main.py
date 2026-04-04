@@ -14,7 +14,8 @@ from linebot.v3.messaging import (
     QuickReply, QuickReplyItem, PostbackAction
 )
 from linebot.v3.webhooks import (
-    MessageEvent, AudioMessageContent, PostbackEvent
+    MessageEvent, AudioMessageContent, PostbackEvent,
+    TextMessageContent, FollowEvent
 )
 import google.auth
 import google.auth.transport.requests
@@ -31,6 +32,8 @@ handler = WebhookHandler(LINE_CHANNEL_SECRET)
 
 # 確認待ちの内容を一時保存
 pending = {}
+# 名前入力待ちのユーザー
+waiting_for_name = set()
 
 TEMPLATE_SHEET_NAME = '●月●日（テンプレート）'
 
@@ -51,6 +54,15 @@ PROMPT = """
 """
 
 # ========== Sheets API ==========
+
+def append_member(user_id, name, token):
+    url = f"https://sheets.googleapis.com/v4/spreadsheets/{MASTER_SPREADSHEET_ID}/values/メンバー!A:C:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS"
+    payload = {"values": [[user_id, name, '']]}
+    resp = requests.post(url, json=payload, headers={
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json"
+    })
+    resp.raise_for_status()
 
 def get_member(user_id, token):
     url = f"https://sheets.googleapis.com/v4/spreadsheets/{MASTER_SPREADSHEET_ID}/values/メンバー!A2:C"
@@ -186,6 +198,52 @@ def webhook():
 @app.route('/health', methods=['GET'])
 def health():
     return 'OK'
+
+@handler.add(FollowEvent)
+def handle_follow(event):
+    user_id = event.source.user_id
+    waiting_for_name.add(user_id)
+    with ApiClient(configuration) as api_client:
+        MessagingApi(api_client).reply_message(
+            ReplyMessageRequest(
+                reply_token=event.reply_token,
+                messages=[TextMessage(
+                    text=(
+                        "🎉 友だち追加ありがとうございます！\n\n"
+                        "このBotは音声で業務日報を自動記録します。\n\n"
+                        "はじめに、フルネームを入力してください。\n"
+                        "例：南井賢大"
+                    )
+                )]
+            )
+        )
+
+@handler.add(MessageEvent, message=TextMessageContent)
+def handle_text(event):
+    user_id = event.source.user_id
+    text = event.message.text.strip()
+
+    if user_id not in waiting_for_name:
+        return
+
+    waiting_for_name.discard(user_id)
+    token = get_sheets_token()
+    append_member(user_id, text, token)
+
+    with ApiClient(configuration) as api_client:
+        MessagingApi(api_client).reply_message(
+            ReplyMessageRequest(
+                reply_token=event.reply_token,
+                messages=[TextMessage(
+                    text=(
+                        f"✅ 登録しました！\n\n"
+                        f"お名前：{text}\n\n"
+                        "担当者がスプレッドシートを準備してご連絡します。\n"
+                        "準備が完了すると音声で日報を送れるようになります。"
+                    )
+                )]
+            )
+        )
 
 @handler.add(MessageEvent, message=AudioMessageContent)
 def handle_audio(event):
