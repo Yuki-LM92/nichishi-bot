@@ -11,8 +11,8 @@ from linebot.v3.messaging import (
 from linebot.v3.webhooks import (
     MessageEvent, AudioMessageContent, PostbackEvent, TextMessageContent
 )
-from google import genai
-from google.genai import types
+import base64
+import requests
 
 app = Flask(__name__)
 
@@ -22,7 +22,6 @@ GEMINI_API_KEY = os.environ['GEMINI_API_KEY']
 
 configuration = Configuration(access_token=LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
-gemini_client = genai.Client(api_key=GEMINI_API_KEY)
 
 # 確認待ちの内容を一時保存
 pending = {}
@@ -87,19 +86,22 @@ def handle_audio(event):
         audio_path = f.name
 
     try:
-        # Gemini Files APIにアップロードして文字起こし＋構造化
+        # Gemini REST APIで文字起こし＋構造化
         with open(audio_path, 'rb') as f:
-            audio_file = gemini_client.files.upload(
-                file=f,
-                config=types.UploadFileConfig(mime_type='audio/mp4')
-            )
-        response = gemini_client.models.generate_content(
-            model='gemini-1.5-pro',
-            contents=[audio_file, PROMPT]
-        )
-        gemini_client.files.delete(name=audio_file.name)
+            audio_b64 = base64.b64encode(f.read()).decode()
 
-        structured = response.text.strip()
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
+        payload = {
+            "contents": [{
+                "parts": [
+                    {"inline_data": {"mime_type": "audio/mp4", "data": audio_b64}},
+                    {"text": PROMPT}
+                ]
+            }]
+        }
+        resp = requests.post(url, json=payload, timeout=120)
+        resp.raise_for_status()
+        structured = resp.json()['candidates'][0]['content']['parts'][0]['text'].strip()
         pending[user_id] = structured
         send_confirm(event.reply_token, structured)
 

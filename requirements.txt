@@ -1,4 +1,4 @@
 flask==3.0.3
 line-bot-sdk==3.12.0
-google-genai==1.0.0
+requests==2.32.3
 gunicorn==21.2.0
