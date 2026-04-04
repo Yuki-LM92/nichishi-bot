@@ -1,0 +1,910 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>音声日報サービス 概念設計書</title>
+  <style>
+    :root {
+      --green: #06C755;
+      --green-light: #e8f9ef;
+      --green-dark: #059144;
+      --gray: #f5f5f5;
+      --border: #e0e0e0;
+      --text: #1a1a1a;
+      --sub: #666;
+    }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: "Hiragino Sans", "Noto Sans JP", sans-serif;
+      color: var(--text);
+      background: #fff;
+      font-size: 14px;
+      line-height: 1.8;
+    }
+
+    /* Cover */
+    .cover {
+      background: linear-gradient(135deg, #06C755 0%, #059144 100%);
+      color: #fff;
+      padding: 80px 60px;
+      min-height: 280px;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+    }
+    .cover .label {
+      font-size: 12px;
+      opacity: 0.8;
+      letter-spacing: 2px;
+      text-transform: uppercase;
+      margin-bottom: 16px;
+    }
+    .cover h1 {
+      font-size: 32px;
+      font-weight: 700;
+      margin-bottom: 12px;
+      line-height: 1.4;
+    }
+    .cover .meta {
+      font-size: 13px;
+      opacity: 0.85;
+      margin-top: 24px;
+      display: flex;
+      gap: 32px;
+    }
+    .cover .meta span { display: flex; align-items: center; gap: 6px; }
+
+    /* Layout */
+    .container {
+      max-width: 900px;
+      margin: 0 auto;
+      padding: 48px 40px;
+    }
+
+    /* TOC */
+    .toc {
+      background: var(--gray);
+      border-radius: 12px;
+      padding: 28px 32px;
+      margin-bottom: 48px;
+    }
+    .toc h2 {
+      font-size: 14px;
+      color: var(--sub);
+      margin-bottom: 16px;
+      letter-spacing: 1px;
+    }
+    .toc ol {
+      list-style: none;
+      counter-reset: toc;
+    }
+    .toc ol li {
+      counter-increment: toc;
+      padding: 4px 0;
+      font-size: 14px;
+    }
+    .toc ol li::before {
+      content: counter(toc) ". ";
+      color: var(--green);
+      font-weight: 700;
+      margin-right: 4px;
+    }
+    .toc ol li a {
+      color: var(--text);
+      text-decoration: none;
+    }
+    .toc ol li a:hover { color: var(--green); }
+
+    /* Sections */
+    section {
+      margin-bottom: 56px;
+    }
+
+    .section-title {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 24px;
+      padding-bottom: 12px;
+      border-bottom: 2px solid var(--green);
+    }
+    .section-num {
+      background: var(--green);
+      color: #fff;
+      font-size: 12px;
+      font-weight: 700;
+      width: 28px;
+      height: 28px;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+    }
+    .section-title h2 {
+      font-size: 20px;
+      font-weight: 700;
+    }
+
+    h3 {
+      font-size: 15px;
+      font-weight: 700;
+      margin: 28px 0 12px;
+      color: var(--green-dark);
+    }
+
+    p { margin-bottom: 12px; color: #333; }
+
+    /* Tags */
+    .tag {
+      display: inline-block;
+      padding: 2px 10px;
+      border-radius: 20px;
+      font-size: 11px;
+      font-weight: 700;
+      margin-right: 4px;
+    }
+    .tag-green { background: var(--green-light); color: var(--green-dark); }
+    .tag-gray { background: #eee; color: #555; }
+    .tag-yellow { background: #fff8e1; color: #e65100; }
+    .tag-blue { background: #e3f2fd; color: #1565c0; }
+
+    /* Tables */
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 16px 0;
+      font-size: 13px;
+    }
+    th {
+      background: var(--green);
+      color: #fff;
+      padding: 10px 14px;
+      text-align: left;
+      font-weight: 600;
+    }
+    td {
+      padding: 10px 14px;
+      border-bottom: 1px solid var(--border);
+      vertical-align: top;
+    }
+    tr:nth-child(even) td { background: var(--gray); }
+    tr:last-child td { border-bottom: none; }
+
+    /* Flow */
+    .flow {
+      display: flex;
+      flex-direction: column;
+      gap: 0;
+      margin: 20px 0;
+    }
+    .flow-step {
+      display: flex;
+      align-items: flex-start;
+      gap: 16px;
+    }
+    .flow-line {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      flex-shrink: 0;
+    }
+    .flow-dot {
+      width: 36px;
+      height: 36px;
+      border-radius: 50%;
+      background: var(--green);
+      color: #fff;
+      font-size: 13px;
+      font-weight: 700;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+    }
+    .flow-connector {
+      width: 2px;
+      height: 32px;
+      background: var(--border);
+      margin: 4px 0;
+    }
+    .flow-content {
+      background: var(--gray);
+      border-radius: 10px;
+      padding: 12px 16px;
+      margin-bottom: 8px;
+      flex: 1;
+    }
+    .flow-content strong { display: block; margin-bottom: 4px; font-size: 14px; }
+    .flow-content span { font-size: 12px; color: var(--sub); }
+
+    /* Architecture */
+    .arch {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 16px;
+      margin: 20px 0;
+    }
+    .arch-card {
+      border: 1.5px solid var(--border);
+      border-radius: 12px;
+      padding: 16px;
+      text-align: center;
+    }
+    .arch-card .icon { font-size: 28px; margin-bottom: 8px; }
+    .arch-card .name { font-size: 13px; font-weight: 700; margin-bottom: 4px; }
+    .arch-card .desc { font-size: 11px; color: var(--sub); }
+    .arch-card.highlight {
+      border-color: var(--green);
+      background: var(--green-light);
+    }
+
+    /* Data */
+    .data-sheet {
+      border: 1.5px solid var(--border);
+      border-radius: 12px;
+      overflow: hidden;
+      margin: 16px 0;
+    }
+    .data-sheet-header {
+      background: var(--green-dark);
+      color: #fff;
+      padding: 10px 16px;
+      font-size: 13px;
+      font-weight: 700;
+    }
+
+    /* Status */
+    .status-list {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      margin: 16px 0;
+    }
+    .status-item {
+      display: flex;
+      align-items: flex-start;
+      gap: 12px;
+      padding: 14px 16px;
+      border-radius: 10px;
+      border: 1.5px solid var(--border);
+    }
+    .status-icon { font-size: 20px; flex-shrink: 0; }
+    .status-title { font-size: 13px; font-weight: 700; margin-bottom: 2px; }
+    .status-desc { font-size: 12px; color: var(--sub); }
+    .status-done { border-color: var(--green); background: var(--green-light); }
+    .status-pending { border-color: #ffd54f; background: #fffde7; }
+    .status-future { border-color: var(--border); background: var(--gray); }
+
+    /* Code */
+    code {
+      background: #f0f0f0;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-family: 'Courier New', monospace;
+      font-size: 12px;
+      color: #c62828;
+    }
+
+    /* Info box */
+    .info-box {
+      background: #e3f2fd;
+      border-left: 4px solid #1976d2;
+      border-radius: 0 8px 8px 0;
+      padding: 14px 16px;
+      margin: 16px 0;
+      font-size: 13px;
+      color: #1565c0;
+    }
+
+    /* Footer */
+    .footer {
+      background: var(--gray);
+      padding: 32px 40px;
+      text-align: center;
+      font-size: 12px;
+      color: var(--sub);
+      margin-top: 48px;
+    }
+
+    @media print {
+      .cover { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+      th { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    }
+  </style>
+</head>
+<body>
+
+<!-- Cover -->
+<div class="cover">
+  <div class="label">Concept Design Document · Prototype v1.0</div>
+  <h1>🎙️ 音声日報サービス<br>概念設計書</h1>
+  <div class="meta">
+    <span>📅 2026年4月</span>
+    <span>👤 対象クライアント：パインヒルズ（南井賢大氏）</span>
+    <span>🔖 ステータス：プロトタイプ</span>
+  </div>
+</div>
+
+<div class="container">
+
+  <!-- TOC -->
+  <div class="toc">
+    <h2>目次</h2>
+    <ol>
+      <li><a href="#overview">サービス概要</a></li>
+      <li><a href="#architecture">システム構成</a></li>
+      <li><a href="#flow-user">ユーザーフロー</a></li>
+      <li><a href="#flow-admin">管理者フロー</a></li>
+      <li><a href="#features">機能仕様</a></li>
+      <li><a href="#data">データ設計</a></li>
+      <li><a href="#tech">技術スタック</a></li>
+      <li><a href="#status">実装状況</a></li>
+      <li><a href="#roadmap">今後の拡張予定</a></li>
+    </ol>
+  </div>
+
+  <!-- 1. サービス概要 -->
+  <section id="overview">
+    <div class="section-title">
+      <div class="section-num">1</div>
+      <h2>サービス概要</h2>
+    </div>
+
+    <p>
+      地域おこし協力隊員が毎日の業務を音声で記録するだけで、日報が自動的に整理・記録されるLINE Botサービス。
+      手入力・PCでの入力作業を一切不要にし、移動中・帰宅途中など隙間時間での日報提出を実現する。
+    </p>
+
+    <table>
+      <tr><th>項目</th><th>内容</th></tr>
+      <tr><td>サービス名</td><td>音声日報サービス（nichishi-bot）</td></tr>
+      <tr><td>対象ユーザー</td><td>地域おこし協力隊員（パインヒルズ）</td></tr>
+      <tr><td>主な利用シーン</td><td>帰宅途中・移動中・業務終了直後</td></tr>
+      <tr><td>利用端末</td><td>スマートフォン（LINEアプリ）</td></tr>
+      <tr><td>記録先</td><td>個人のGoogleスプレッドシート</td></tr>
+      <tr><td>通知先</td><td>Slack（共有事項・管理通知）</td></tr>
+    </table>
+
+    <h3>コンセプト</h3>
+    <div class="arch" style="grid-template-columns: repeat(3,1fr);">
+      <div class="arch-card highlight">
+        <div class="icon">🎤</div>
+        <div class="name">話すだけ</div>
+        <div class="desc">音声を送るだけで完結。キーボード入力不要。</div>
+      </div>
+      <div class="arch-card highlight">
+        <div class="icon">🤖</div>
+        <div class="name">AIが整理</div>
+        <div class="desc">Gemini AIが音声を自動で構造化・フォーマット。</div>
+      </div>
+      <div class="arch-card highlight">
+        <div class="icon">📊</div>
+        <div class="name">自動記録</div>
+        <div class="desc">スプレッドシートへの書き込みまで全自動。</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 2. システム構成 -->
+  <section id="architecture">
+    <div class="section-title">
+      <div class="section-num">2</div>
+      <h2>システム構成</h2>
+    </div>
+
+    <div class="arch" style="grid-template-columns: repeat(3,1fr);">
+      <div class="arch-card">
+        <div class="icon">💬</div>
+        <div class="name">LINE Messaging API</div>
+        <div class="desc">ユーザーとの対話インターフェース<br>Webhook受信・メッセージ送信</div>
+      </div>
+      <div class="arch-card">
+        <div class="icon">📋</div>
+        <div class="name">LIFF登録フォーム</div>
+        <div class="desc">GitHub Pages上で動作<br>初回利用登録UI</div>
+      </div>
+      <div class="arch-card">
+        <div class="icon">⚙️</div>
+        <div class="name">Cloud Run</div>
+        <div class="desc">Webhookサーバー（Flask）<br>GitHubと連携し自動デプロイ</div>
+      </div>
+      <div class="arch-card">
+        <div class="icon">🧠</div>
+        <div class="name">Gemini API</div>
+        <div class="desc">音声・テキストを日報フォーマットに構造化</div>
+      </div>
+      <div class="arch-card">
+        <div class="icon">📊</div>
+        <div class="name">Google Sheets</div>
+        <div class="desc">日報記録先<br>マスタースプシ（メンバー管理）</div>
+      </div>
+      <div class="arch-card">
+        <div class="icon">💼</div>
+        <div class="name">Slack</div>
+        <div class="desc">管理・共有通知<br>登録通知・共有事項・スプシ設定通知</div>
+      </div>
+    </div>
+
+    <h3>データフロー</h3>
+    <table>
+      <tr><th>フロー</th><th>経路</th></tr>
+      <tr>
+        <td>音声送信</td>
+        <td>LINE → Cloud Run → Gemini API → 確認メッセージ → LINE</td>
+      </tr>
+      <tr>
+        <td>日報記録</td>
+        <td>確認OK → Cloud Run → Google Sheets（テンプレートコピー＋書き込み）</td>
+      </tr>
+      <tr>
+        <td>Slack通知</td>
+        <td>Cloud Run → Slack Webhook（共有事項・登録通知）</td>
+      </tr>
+      <tr>
+        <td>スプシ設定通知</td>
+        <td>マスタースプシ編集 → Apps Script → Slack Webhook</td>
+      </tr>
+      <tr>
+        <td>新規登録</td>
+        <td>LIFF → Cloud Run（/register） → マスタースプシ → Slack通知</td>
+      </tr>
+    </table>
+  </section>
+
+  <!-- 3. ユーザーフロー -->
+  <section id="flow-user">
+    <div class="section-title">
+      <div class="section-num">3</div>
+      <h2>ユーザーフロー</h2>
+    </div>
+
+    <h3>初回登録フロー</h3>
+    <div class="flow">
+      <div class="flow-step">
+        <div class="flow-line">
+          <div class="flow-dot">1</div>
+          <div class="flow-connector"></div>
+        </div>
+        <div class="flow-content">
+          <strong>友だち追加</strong>
+          <span>LINE公式アカウントを友だち追加。ウェルカムメッセージが自動送信される。</span>
+        </div>
+      </div>
+      <div class="flow-step">
+        <div class="flow-line">
+          <div class="flow-dot">2</div>
+          <div class="flow-connector"></div>
+        </div>
+        <div class="flow-content">
+          <strong>リッチメニュー「初めての方はこちら」をタップ</strong>
+          <span>LINE内ブラウザ（LIFF）で登録フォームが開く。</span>
+        </div>
+      </div>
+      <div class="flow-step">
+        <div class="flow-line">
+          <div class="flow-dot">3</div>
+          <div class="flow-connector"></div>
+        </div>
+        <div class="flow-content">
+          <strong>名前・メールアドレスを入力して送信</strong>
+          <span>LINE IDと紐付けてマスタースプシに記録される。Slackに登録通知が届く。</span>
+        </div>
+      </div>
+      <div class="flow-step">
+        <div class="flow-line">
+          <div class="flow-dot">4</div>
+        </div>
+        <div class="flow-content">
+          <strong>管理者がスプレッドシートを準備・Slackで案内</strong>
+          <span>準備完了後、Slackで通知。以降は音声日報が利用可能。</span>
+        </div>
+      </div>
+    </div>
+
+    <h3>日報送信フロー（日常利用）</h3>
+    <div class="flow">
+      <div class="flow-step">
+        <div class="flow-line">
+          <div class="flow-dot">1</div>
+          <div class="flow-connector"></div>
+        </div>
+        <div class="flow-content">
+          <strong>マイクボタンを長押しして音声を送信</strong>
+          <span>今日の業務内容を話す。時間帯・活動内容・共有事項など。</span>
+        </div>
+      </div>
+      <div class="flow-step">
+        <div class="flow-line">
+          <div class="flow-dot">2</div>
+          <div class="flow-connector"></div>
+        </div>
+        <div class="flow-content">
+          <strong>「受け取りました！整理中...」がすぐ返信される</strong>
+          <span>10〜30秒の処理中も届いたことが確認できる。</span>
+        </div>
+      </div>
+      <div class="flow-step">
+        <div class="flow-line">
+          <div class="flow-dot">3</div>
+          <div class="flow-connector"></div>
+        </div>
+        <div class="flow-content">
+          <strong>構造化された日報内容が確認メッセージで届く</strong>
+          <span>日付・活動内容・共有事項がフォーマット済みで表示される。</span>
+        </div>
+      </div>
+      <div class="flow-step">
+        <div class="flow-line">
+          <div class="flow-dot">4a</div>
+          <div class="flow-connector"></div>
+        </div>
+        <div class="flow-content">
+          <strong>「✅ はい」をタップ</strong>
+          <span>スプレッドシートに記録。共有事項があればSlackにも送信。「X月X日の日報を記録しました」と完了通知。</span>
+        </div>
+      </div>
+      <div class="flow-step">
+        <div class="flow-line">
+          <div class="flow-dot">4b</div>
+        </div>
+        <div class="flow-content">
+          <strong>「✏️ 修正する」をタップ</strong>
+          <span>修正内容を音声またはテキストで送ると、再度AIが整理して確認画面を表示。</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 4. 管理者フロー -->
+  <section id="flow-admin">
+    <div class="section-title">
+      <div class="section-num">4</div>
+      <h2>管理者フロー</h2>
+    </div>
+
+    <h3>新規メンバー受け入れ手順</h3>
+    <div class="flow">
+      <div class="flow-step">
+        <div class="flow-line">
+          <div class="flow-dot">1</div>
+          <div class="flow-connector"></div>
+        </div>
+        <div class="flow-content">
+          <strong>Slackに登録通知が届く</strong>
+          <span>「新規メンバーが登録しました：名前・メールアドレス」</span>
+        </div>
+      </div>
+      <div class="flow-step">
+        <div class="flow-line">
+          <div class="flow-dot">2</div>
+          <div class="flow-connector"></div>
+        </div>
+        <div class="flow-content">
+          <strong>日報用スプレッドシートを作成</strong>
+          <span>テンプレートをコピーして個人用スプシを準備する。</span>
+        </div>
+      </div>
+      <div class="flow-step">
+        <div class="flow-line">
+          <div class="flow-dot">3</div>
+          <div class="flow-connector"></div>
+        </div>
+        <div class="flow-content">
+          <strong>マスタースプシのC列にスプシURLを貼り付け</strong>
+          <span>URLを貼るだけでIDが自動抽出される（Apps Script）。Slackに設定完了通知が届く。</span>
+        </div>
+      </div>
+      <div class="flow-step">
+        <div class="flow-line">
+          <div class="flow-dot">4</div>
+        </div>
+        <div class="flow-content">
+          <strong>Slackでメンバーに利用開始を案内</strong>
+          <span>以降はメンバーが自律的に音声で日報を送信できる。</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 5. 機能仕様 -->
+  <section id="features">
+    <div class="section-title">
+      <div class="section-num">5</div>
+      <h2>機能仕様</h2>
+    </div>
+
+    <h3>LINE Bot機能一覧</h3>
+    <table>
+      <tr><th>機能</th><th>トリガー</th><th>動作</th></tr>
+      <tr>
+        <td>ウェルカムメッセージ</td>
+        <td>友だち追加</td>
+        <td>サービス説明＋リッチメニュー案内を自動送信</td>
+      </tr>
+      <tr>
+        <td>未登録案内</td>
+        <td>テキスト送信（未登録ユーザー）</td>
+        <td>「初めての方はこちら」へ誘導</td>
+      </tr>
+      <tr>
+        <td>スプシ準備待ち案内</td>
+        <td>音声・テキスト送信（スプシ未設定）</td>
+        <td>「準備中です、もうしばらく」と返信</td>
+      </tr>
+      <tr>
+        <td>音声受付フィードバック</td>
+        <td>音声送信</td>
+        <td>「受け取りました！整理中...」を即時返信</td>
+      </tr>
+      <tr>
+        <td>音声→日報変換</td>
+        <td>音声送信（登録済み）</td>
+        <td>Gemini APIで構造化。確認メッセージをpush送信</td>
+      </tr>
+      <tr>
+        <td>日報確認</td>
+        <td>「✅ はい」タップ</td>
+        <td>スプシに記録＋Slack通知（共有事項あれば）</td>
+      </tr>
+      <tr>
+        <td>修正フロー</td>
+        <td>「✏️ 修正する」タップ</td>
+        <td>修正内容を受付→再構造化→再確認</td>
+      </tr>
+      <tr>
+        <td>エラーハンドリング</td>
+        <td>Geminiタイムアウト・空レスポンス</td>
+        <td>ユーザー向けに状況を説明したメッセージを返信</td>
+      </tr>
+    </table>
+
+    <h3>LIFF登録フォーム</h3>
+    <table>
+      <tr><th>項目</th><th>内容</th></tr>
+      <tr><td>入力項目</td><td>フルネーム・メールアドレス</td></tr>
+      <tr><td>LINE ID取得</td><td>LIFF SDK経由で自動取得（入力不要）</td></tr>
+      <tr><td>二重登録防止</td><td>同一LINE IDが既存の場合「すでに登録済み」を表示</td></tr>
+      <tr><td>バリデーション</td><td>空欄チェック・メール形式チェック</td></tr>
+      <tr><td>ホスティング</td><td>GitHub Pages（https://yuki-lm92.github.io/nichishi-register/）</td></tr>
+    </table>
+
+    <h3>Slack通知一覧</h3>
+    <table>
+      <tr><th>タイミング</th><th>内容</th></tr>
+      <tr><td>新規登録時</td><td>名前・メールアドレス＋スプシ準備の依頼</td></tr>
+      <tr><td>スプシ設定時</td><td>「〇〇さんのスプシを設定しました」（Apps Script）</td></tr>
+      <tr><td>日報確認時</td><td>共有事項の内容（「なし」の場合は通知しない）</td></tr>
+    </table>
+
+    <h3>Google Apps Script（マスタースプシ）</h3>
+    <table>
+      <tr><th>機能</th><th>内容</th></tr>
+      <tr><td>URL→ID自動変換</td><td>C列にスプシURLを貼ると自動でIDのみ抽出・上書き</td></tr>
+      <tr><td>Slack通知</td><td>C列書き込み時にSlack Webhookへ通知</td></tr>
+      <tr><td>設定方法</td><td>スクリプトプロパティ <code>SLACK_WEBHOOK_URL</code> を設定後、トリガー登録</td></tr>
+    </table>
+  </section>
+
+  <!-- 6. データ設計 -->
+  <section id="data">
+    <div class="section-title">
+      <div class="section-num">6</div>
+      <h2>データ設計</h2>
+    </div>
+
+    <h3>マスタースプレッドシート（メンバー管理）</h3>
+    <div class="data-sheet">
+      <div class="data-sheet-header">シート名：メンバー</div>
+      <table>
+        <tr><th>列</th><th>内容</th><th>設定者</th><th>備考</th></tr>
+        <tr><td>A列</td><td>LINE ユーザーID</td><td>自動（LIFF）</td><td><code>U</code>から始まる文字列</td></tr>
+        <tr><td>B列</td><td>氏名</td><td>自動（LIFF）</td><td>フルネーム</td></tr>
+        <tr><td>C列</td><td>日報スプシID</td><td>管理者</td><td>URLを貼ると自動変換</td></tr>
+        <tr><td>D列</td><td>メールアドレス</td><td>自動（LIFF）</td><td>連絡先として保持</td></tr>
+      </table>
+    </div>
+
+    <h3>日報スプレッドシート（個人）</h3>
+    <div class="data-sheet">
+      <div class="data-sheet-header">シート：●月●日（テンプレート）→ 日次コピー（例：4月4日）</div>
+      <table>
+        <tr><th>セル</th><th>内容</th><th>自動入力</th></tr>
+        <tr><td>C3</td><td>日付</td><td>○（令和〇年〇月〇日）</td></tr>
+        <tr><td>C6</td><td>氏名</td><td>○（マスタースプシから取得）</td></tr>
+        <tr><td>A10〜A16</td><td>時間帯</td><td>○（音声から抽出）</td></tr>
+        <tr><td>C10〜C16</td><td>活動内容（最大7件）</td><td>○（音声から抽出）</td></tr>
+        <tr><td>B17</td><td>共有事項（Slack共有内容）</td><td>○（音声から抽出）</td></tr>
+      </table>
+    </div>
+
+    <div class="info-box">
+      同日に2回以上送信した場合、テンプレートの再コピーはスキップされ、既存シートへの上書きとなります。
+    </div>
+
+    <h3>インメモリ状態管理（サーバー）</h3>
+    <table>
+      <tr><th>変数</th><th>型</th><th>用途</th></tr>
+      <tr><td><code>pending</code></td><td>dict</td><td>確認待ち中の構造化テキスト（user_id → text）</td></tr>
+      <tr><td><code>pending_correction</code></td><td>set</td><td>修正モード中のユーザーID</td></tr>
+    </table>
+  </section>
+
+  <!-- 7. 技術スタック -->
+  <section id="tech">
+    <div class="section-title">
+      <div class="section-num">7</div>
+      <h2>技術スタック</h2>
+    </div>
+
+    <table>
+      <tr><th>領域</th><th>技術</th><th>バージョン/詳細</th></tr>
+      <tr><td>Webサーバー</td><td>Python / Flask / gunicorn</td><td>Flask 3.0.3 / gunicorn 21.2.0</td></tr>
+      <tr><td>デプロイ</td><td>Google Cloud Run</td><td>GitHubプッシュで自動デプロイ</td></tr>
+      <tr><td>AI</td><td>Google Gemini API</td><td>gemini-2.5-flash（REST API直接呼び出し）</td></tr>
+      <tr><td>LINEサーバー</td><td>LINE Bot SDK v3</td><td>line-bot-sdk 3.12.0</td></tr>
+      <tr><td>LINEフロント</td><td>LINE LIFF SDK</td><td>v2.22.3（GitHub Pages上）</td></tr>
+      <tr><td>Google認証</td><td>Application Default Credentials</td><td>google-auth 2.29.0 / Cloud Run サービスアカウント</td></tr>
+      <tr><td>データベース</td><td>Google Sheets API v4</td><td>REST API（requests経由）</td></tr>
+      <tr><td>Slack連携</td><td>Incoming Webhooks</td><td>Webhook URL設定で有効化</td></tr>
+      <tr><td>フロントホスティング</td><td>GitHub Pages</td><td>https://yuki-lm92.github.io/nichishi-register/</td></tr>
+      <tr><td>スクリプト自動化</td><td>Google Apps Script</td><td>マスタースプシのonEditトリガー</td></tr>
+    </table>
+
+    <h3>リポジトリ構成</h3>
+    <table>
+      <tr><th>リポジトリ</th><th>内容</th><th>URL</th></tr>
+      <tr><td>nichishi-bot</td><td>Cloud Runサーバー（main.py）</td><td>github.com/Yuki-LM92/nichishi-bot</td></tr>
+      <tr><td>nichishi-register</td><td>LIFF登録フォーム（index.html）</td><td>github.com/Yuki-LM92/nichishi-register</td></tr>
+    </table>
+
+    <h3>環境変数（Cloud Run）</h3>
+    <table>
+      <tr><th>変数名</th><th>内容</th><th>必須</th></tr>
+      <tr><td><code>LINE_CHANNEL_SECRET</code></td><td>LINEチャンネルシークレット</td><td>必須</td></tr>
+      <tr><td><code>LINE_CHANNEL_ACCESS_TOKEN</code></td><td>LINEチャンネルアクセストークン</td><td>必須</td></tr>
+      <tr><td><code>GEMINI_API_KEY</code></td><td>Gemini APIキー</td><td>必須</td></tr>
+      <tr><td><code>MASTER_SPREADSHEET_ID</code></td><td>マスタースプシID</td><td>必須</td></tr>
+      <tr><td><code>SLACK_WEBHOOK_URL</code></td><td>Slack Incoming Webhook URL</td><td>任意（未設定時はSkip）</td></tr>
+    </table>
+  </section>
+
+  <!-- 8. 実装状況 -->
+  <section id="status">
+    <div class="section-title">
+      <div class="section-num">8</div>
+      <h2>実装状況</h2>
+    </div>
+
+    <div class="status-list">
+      <div class="status-item status-done">
+        <div class="status-icon">✅</div>
+        <div>
+          <div class="status-title">音声→日報変換・スプレッドシート記録</div>
+          <div class="status-desc">Gemini APIによる構造化・テンプレートコピー・セル書き込みまで完全自動</div>
+        </div>
+      </div>
+      <div class="status-item status-done">
+        <div class="status-icon">✅</div>
+        <div>
+          <div class="status-title">LIFF登録フォーム</div>
+          <div class="status-desc">二重登録防止・LINE ID自動取得・GitHub Pagesにホスティング済み</div>
+        </div>
+      </div>
+      <div class="status-item status-done">
+        <div class="status-icon">✅</div>
+        <div>
+          <div class="status-title">音声処理中の即時フィードバック</div>
+          <div class="status-desc">受信直後に「整理中...」を返信。結果はpush通知で届く</div>
+        </div>
+      </div>
+      <div class="status-item status-done">
+        <div class="status-icon">✅</div>
+        <div>
+          <div class="status-title">修正フロー</div>
+          <div class="status-desc">「修正する」タップ後、テキスト・音声どちらでも修正可能</div>
+        </div>
+      </div>
+      <div class="status-item status-done">
+        <div class="status-icon">✅</div>
+        <div>
+          <div class="status-title">エラーハンドリング</div>
+          <div class="status-desc">タイムアウト・空レスポンス時にユーザーフレンドリーなメッセージを返信</div>
+        </div>
+      </div>
+      <div class="status-item status-done">
+        <div class="status-icon">✅</div>
+        <div>
+          <div class="status-title">マスタースプシURL自動変換（Apps Script）</div>
+          <div class="status-desc">C列にURLを貼るだけでIDが自動抽出される</div>
+        </div>
+      </div>
+      <div class="status-item status-pending">
+        <div class="status-icon">⏳</div>
+        <div>
+          <div class="status-title">Slack通知（実装済み・URL設定待ち）</div>
+          <div class="status-desc">SLACK_WEBHOOK_URLを環境変数に設定するだけで即時有効化</div>
+        </div>
+      </div>
+      <div class="status-item status-future">
+        <div class="status-icon">🔜</div>
+        <div>
+          <div class="status-title">リッチメニューの登録前後出し分け</div>
+          <div class="status-desc">登録済みユーザーには音声案内メニューに切り替え</div>
+        </div>
+      </div>
+      <div class="status-item status-future">
+        <div class="status-icon">🔜</div>
+        <div>
+          <div class="status-title">日報送信リマインダー</div>
+          <div class="status-desc">毎日一定時間に送信催促メッセージを配信</div>
+        </div>
+      </div>
+      <div class="status-item status-future">
+        <div class="status-icon">🔜</div>
+        <div>
+          <div class="status-title">Cold Start対策（本番移行後に検討）</div>
+          <div class="status-desc">Cloud Runの最小インスタンス数を1に設定（月数百円のコストが発生）</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 9. ロードマップ -->
+  <section id="roadmap">
+    <div class="section-title">
+      <div class="section-num">9</div>
+      <h2>今後の拡張予定</h2>
+    </div>
+
+    <table>
+      <tr><th>優先度</th><th>機能</th><th>概要</th></tr>
+      <tr>
+        <td><span class="tag tag-yellow">高</span></td>
+        <td>Slack本番化</td>
+        <td>Webhook URL取得・Cloud Run環境変数設定・Apps Scriptプロパティ設定</td>
+      </tr>
+      <tr>
+        <td><span class="tag tag-yellow">高</span></td>
+        <td>アカウント名・アイコン整備</td>
+        <td>LINE Official Account Managerで設定</td>
+      </tr>
+      <tr>
+        <td><span class="tag tag-blue">中</span></td>
+        <td>リッチメニュー出し分け</td>
+        <td>登録前：登録案内 / 登録後：音声ガイド・よくある質問</td>
+      </tr>
+      <tr>
+        <td><span class="tag tag-blue">中</span></td>
+        <td>日報送信リマインダー</td>
+        <td>毎日夕方に送信催促を自動配信。Cloud Schedulerで実装予定</td>
+      </tr>
+      <tr>
+        <td><span class="tag tag-gray">低</span></td>
+        <td>複数メンバー対応の安定化</td>
+        <td>同時リクエスト時の状態管理をRedis等に移行</td>
+      </tr>
+      <tr>
+        <td><span class="tag tag-gray">低</span></td>
+        <td>Cold Start対策</td>
+        <td>本番移行・利用頻度次第でmin-instances=1に設定</td>
+      </tr>
+      <tr>
+        <td><span class="tag tag-gray">低</span></td>
+        <td>写真・PDF添付</td>
+        <td>現場写真を日報に添付する機能（要件定義中）</td>
+      </tr>
+    </table>
+  </section>
+
+</div>
+
+<div class="footer">
+  音声日報サービス 概念設計書 v1.0 &nbsp;|&nbsp; 2026年4月 &nbsp;|&nbsp; プロトタイプ段階
+</div>
+
+</body>
+</html>
