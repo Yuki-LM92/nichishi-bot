@@ -409,14 +409,29 @@ def handle_text(event):
     # 修正モード：「修正する」を押してテキストを送ってきた場合
     if user_id in pending_correction:
         pending_correction.discard(user_id)
+        reply_text(event.reply_token, "✏️ 修正内容を受け取りました！\nAIが整理しています...")
         try:
             structured = call_gemini_text(text)
             pending[user_id] = structured
-            send_confirm(event.reply_token, structured)
+            with ApiClient(configuration) as api_client:
+                MessagingApi(api_client).push_message(
+                    push_message_request=PushMessageRequest(
+                        to=user_id,
+                        messages=[
+                            TextMessage(
+                                text=f"📋 以下の内容で記録しますね。確認してください。\n\n{structured}",
+                                quick_reply=QuickReply(items=[
+                                    QuickReplyItem(action=PostbackAction(label='✅ はい', data='confirm_yes')),
+                                    QuickReplyItem(action=PostbackAction(label='✏️ 修正する', data='confirm_no')),
+                                ])
+                            )
+                        ]
+                    )
+                )
         except requests.exceptions.Timeout:
-            reply_text(event.reply_token, "⏱️ AIの処理に時間がかかっています。\nもう一度送ってください。")
+            push_text(user_id, "⏱️ AIの処理に時間がかかっています。\nもう一度送ってください。")
         except Exception:
-            reply_text(event.reply_token, "⚠️ 処理中にエラーが発生しました。\nもう一度送ってください。")
+            push_text(user_id, "⚠️ 処理中にエラーが発生しました。\nもう一度送ってください。")
         return
 
     # 登録状況を確認
@@ -452,6 +467,12 @@ def handle_audio(event):
     # 修正モードを解除（音声で修正する場合も通常処理へ）
     pending_correction.discard(user_id)
 
+    # すぐに受付メッセージを返信（reply_tokenはここで使い切る）
+    reply_text(
+        event.reply_token,
+        "🎙️ 音声を受け取りました！\nAIが内容を整理しています...\n（10〜30秒ほどかかります）"
+    )
+
     # 音声データを取得
     with ApiClient(configuration) as api_client:
         audio_bytes = MessagingApiBlob(api_client).get_message_content(event.message.id)
@@ -467,20 +488,30 @@ def handle_audio(event):
         try:
             structured = call_gemini_audio(audio_b64)
         except requests.exceptions.Timeout:
-            reply_text(
-                event.reply_token,
-                "⏱️ AIの処理に時間がかかっています。\nしばらくしてからもう一度送ってください。"
-            )
+            push_text(user_id, "⏱️ AIの処理に時間がかかっています。\nしばらくしてからもう一度送ってください。")
             return
         except Exception:
-            reply_text(
-                event.reply_token,
-                "⚠️ 音声の解析に失敗しました。\n少し長めに話して、もう一度送ってください。\n（目安：30秒以上）"
-            )
+            push_text(user_id, "⚠️ 音声の解析に失敗しました。\n少し長めに話して、もう一度送ってください。\n（目安：30秒以上）")
             return
 
         pending[user_id] = structured
-        send_confirm(event.reply_token, structured)
+
+        # 結果はpush_messageで送る（reply_tokenは使用済みのため）
+        with ApiClient(configuration) as api_client:
+            MessagingApi(api_client).push_message(
+                push_message_request=PushMessageRequest(
+                    to=user_id,
+                    messages=[
+                        TextMessage(
+                            text=f"📋 以下の内容で記録しますね。確認してください。\n\n{structured}",
+                            quick_reply=QuickReply(items=[
+                                QuickReplyItem(action=PostbackAction(label='✅ はい', data='confirm_yes')),
+                                QuickReplyItem(action=PostbackAction(label='✏️ 修正する', data='confirm_no')),
+                            ])
+                        )
+                    ]
+                )
+            )
 
     finally:
         os.unlink(audio_path)
