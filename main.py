@@ -90,7 +90,7 @@ def handle_audio(event):
         with open(audio_path, 'rb') as f:
             audio_b64 = base64.b64encode(f.read()).decode()
 
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
         payload = {
             "contents": [{
                 "parts": [
