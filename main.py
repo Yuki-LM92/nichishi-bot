@@ -30,12 +30,13 @@ MASTER_SPREADSHEET_ID = os.environ['MASTER_SPREADSHEET_ID']
 configuration = Configuration(access_token=LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
 
-# 確認待ちの内容を一時保存
+# 確認待ちの内容を一時保存 (user_id → structured text)
 pending = {}
-# 名前入力待ちのユーザー
-waiting_for_name = set()
+# 修正モード：「修正する」を押した後にテキスト/音声を待っているユーザー
+pending_correction = set()
 
 TEMPLATE_SHEET_NAME = '●月●日（テンプレート）'
+LIFF_URL = 'https://liff.line.me/2009693703-ONMSHAXr'
 
 PROMPT = """
 あなたは地域おこし協力隊の業務日報の記録係です。
@@ -53,25 +54,25 @@ PROMPT = """
 音声に含まれる情報だけを使い、推測で補わないでください。
 """
 
+TEXT_PROMPT = """
+あなたは地域おこし協力隊の業務日報の記録係です。
+以下のテキストは、協力隊員が今日の業務内容を伝えたものです。
+
+以下のフォーマットだけで出力してください（余計な説明は不要）：
+
+📅 日付：（言及があれば。なければ空欄）
+⏰ 活動内容：
+・[時間帯があれば] 活動内容
+・[時間帯があれば] 活動内容
+（時間の言及がない場合はそのまま箇条書き）
+📣 共有事項：（上司や仲間にSlackで伝えたいことがあれば記載。なければ「なし」）
+
+テキストに含まれる情報だけを使い、推測で補わないでください。
+
+テキスト：
+"""
+
 # ========== Sheets API ==========
-
-def append_member(user_id, name, token):
-    url = f"https://sheets.googleapis.com/v4/spreadsheets/{MASTER_SPREADSHEET_ID}/values/メンバー!A:C:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS"
-    payload = {"values": [[user_id, name, '']]}
-    resp = requests.post(url, json=payload, headers={
-        "Authorization": f"Bearer {token}",
-        "Content-Type": "application/json"
-    })
-    resp.raise_for_status()
-
-def get_member(user_id, token):
-    url = f"https://sheets.googleapis.com/v4/spreadsheets/{MASTER_SPREADSHEET_ID}/values/メンバー!A2:C"
-    resp = requests.get(url, headers={"Authorization": f"Bearer {token}"})
-    resp.raise_for_status()
-    for row in resp.json().get('values', []):
-        if len(row) >= 3 and row[0] == user_id:
-            return {'name': row[1], 'spreadsheet_id': row[2]}
-    return None
 
 def get_sheets_token():
     creds, _ = google.auth.default(
@@ -79,6 +80,30 @@ def get_sheets_token():
     )
     creds.refresh(google.auth.transport.requests.Request())
     return creds.token
+
+def get_member(user_id, token):
+    """マスタースプシからユーザー情報を取得。未登録ならNoneを返す。"""
+    url = f"https://sheets.googleapis.com/v4/spreadsheets/{MASTER_SPREADSHEET_ID}/values/メンバー!A2:C"
+    resp = requests.get(url, headers={"Authorization": f"Bearer {token}"})
+    resp.raise_for_status()
+    for row in resp.json().get('values', []):
+        if row and row[0] == user_id:
+            name = row[1] if len(row) > 1 else ''
+            spreadsheet_id = row[2] if len(row) > 2 else ''
+            return {'name': name, 'spreadsheet_id': spreadsheet_id}
+    return None
+
+def append_member(user_id, name, email, token):
+    url = (
+        f"https://sheets.googleapis.com/v4/spreadsheets/{MASTER_SPREADSHEET_ID}"
+        f"/values/メンバー!A:D:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS"
+    )
+    payload = {"values": [[user_id, name, '', email]]}
+    resp = requests.post(url, json=payload, headers={
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json"
+    })
+    resp.raise_for_status()
 
 def get_template_sheet_id(spreadsheet_id, token):
     url = f"https://sheets.googleapis.com/v4/spreadsheets/{spreadsheet_id}?fields=sheets.properties"
@@ -108,7 +133,6 @@ def write_to_sheet(spreadsheet_id, sheet_title, name, structured_text, token):
     today = datetime.now()
     reiwa_year = today.year - 2018
 
-    # 構造化テキストをパース
     activities = []
     notes = 'なし'
     mode = None
@@ -121,7 +145,6 @@ def write_to_sheet(spreadsheet_id, sheet_title, name, structured_text, token):
             notes = line.replace('📣 共有事項：', '').strip()
         elif mode == 'act' and line.startswith('・'):
             item = line.lstrip('・').strip()
-            # [時間帯] 内容 を分割
             m = re.match(r'\[(.+?)\]\s*(.*)', item)
             if m:
                 activities.append((m.group(1), m.group(2)))
@@ -130,7 +153,6 @@ def write_to_sheet(spreadsheet_id, sheet_title, name, structured_text, token):
         elif mode == 'notes' and line:
             notes += '\n' + line
 
-    # セルデータを構築
     data = [
         {"range": f"'{sheet_title}'!C3",
          "values": [[f"令和{reiwa_year}年{today.month}月{today.day}日"]]},
@@ -150,10 +172,11 @@ def write_to_sheet(spreadsheet_id, sheet_title, name, structured_text, token):
     resp.raise_for_status()
 
 def record_to_sheet(user_id, structured_text):
+    """記録成功時はシート名を返す。失敗時はNoneを返す。"""
     token = get_sheets_token()
     member = get_member(user_id, token)
-    if not member:
-        return False
+    if not member or not member.get('spreadsheet_id'):
+        return None
     spreadsheet_id = member['spreadsheet_id']
     name = member['name']
     today = datetime.now()
@@ -161,12 +184,47 @@ def record_to_sheet(user_id, structured_text):
 
     template_id = get_template_sheet_id(spreadsheet_id, token)
     if template_id is None:
-        return False
+        return None
     copy_template(spreadsheet_id, template_id, sheet_title, token)
     write_to_sheet(spreadsheet_id, sheet_title, name, structured_text, token)
-    return True
+    return sheet_title
 
-# ========== LINE handlers ==========
+# ========== Gemini ==========
+
+def call_gemini_audio(audio_b64):
+    """音声データをGeminiに送り、構造化テキストを返す。失敗時は例外を投げる。"""
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
+    payload = {"contents": [{"parts": [
+        {"inline_data": {"mime_type": "audio/mp4", "data": audio_b64}},
+        {"text": PROMPT}
+    ]}]}
+    resp = requests.post(url, json=payload, timeout=120)
+    resp.raise_for_status()
+    candidates = resp.json().get('candidates', [])
+    if not candidates:
+        raise ValueError("Gemini returned empty candidates")
+    text = candidates[0]['content']['parts'][0]['text'].strip()
+    if not text:
+        raise ValueError("Gemini returned empty text")
+    return text
+
+def call_gemini_text(text):
+    """テキストをGeminiで日報フォーマットに変換する。失敗時は例外を投げる。"""
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
+    payload = {"contents": [{"parts": [
+        {"text": TEXT_PROMPT + text}
+    ]}]}
+    resp = requests.post(url, json=payload, timeout=60)
+    resp.raise_for_status()
+    candidates = resp.json().get('candidates', [])
+    if not candidates:
+        raise ValueError("Gemini returned empty candidates")
+    result = candidates[0]['content']['parts'][0]['text'].strip()
+    if not result:
+        raise ValueError("Gemini returned empty text")
+    return result
+
+# ========== LINE helpers ==========
 
 def send_confirm(reply_token, structured_text):
     with ApiClient(configuration) as api_client:
@@ -184,6 +242,67 @@ def send_confirm(reply_token, structured_text):
                 ]
             )
         )
+
+def reply_text(reply_token, text):
+    with ApiClient(configuration) as api_client:
+        MessagingApi(api_client).reply_message(
+            ReplyMessageRequest(
+                reply_token=reply_token,
+                messages=[TextMessage(text=text)]
+            )
+        )
+
+def push_text(user_id, text):
+    with ApiClient(configuration) as api_client:
+        MessagingApi(api_client).push_message(
+            push_message_request=PushMessageRequest(
+                to=user_id,
+                messages=[TextMessage(text=text)]
+            )
+        )
+
+# ========== Messages ==========
+
+WELCOME_MESSAGE = f"""\
+━━━━━━━━━━━━━━━━━━━
+🎙️ 音声日報サービスへようこそ！
+━━━━━━━━━━━━━━━━━━━
+
+このアカウントでできること：
+
+🎤 毎日の業務を「音声を送るだけ」で日報が完成
+📋 話した内容をAIが自動で整理・記録
+📊 スプレッドシートに自動で書き込み
+💬 チームへの共有も同時に行えます
+
+手入力は一切不要。帰り道や移動中に
+今日の業務をひとこと話すだけでOKです。
+
+━━━━━━━━━━━━━━━━━━━
+ご利用には利用登録が必要です。
+
+👇 下のメニューから「初めての方はこちら」を
+　　タップして登録をお願いします。
+━━━━━━━━━━━━━━━━━━━"""
+
+NOT_REGISTERED_MESSAGE = (
+    "ご利用には利用登録が必要です。\n\n"
+    "下のメニューから「初めての方はこちら」を\n"
+    "タップして登録してください🙏"
+)
+
+WAITING_SHEET_MESSAGE = (
+    "担当者がスプレッドシートを準備中です。\n"
+    "準備が完了したらご連絡します。\n"
+    "もうしばらくお待ちください🙏"
+)
+
+AUDIO_GUIDE_MESSAGE = (
+    "🎙️ 音声メッセージを送ると日報を記録できます。\n"
+    "マイクボタンを長押しして話してみてください！"
+)
+
+# ========== Flask routes ==========
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
@@ -207,169 +326,101 @@ def register():
         resp.headers['Access-Control-Allow-Headers'] = 'Content-Type'
         resp.headers['Access-Control-Allow-Methods'] = 'POST'
         return resp
+
     data = request.get_json()
     line_user_id = data.get('line_user_id', '')
-    name = data.get('name', '')
-    email = data.get('email', '')
+    name = data.get('name', '').strip()
+    email = data.get('email', '').strip()
 
     if not name or not email:
         return {'error': 'missing fields'}, 400
 
     token = get_sheets_token()
 
-    # 管理スプシに記録（LINE ID・名前・メールアドレス・スプシID空欄）
-    url = f"https://sheets.googleapis.com/v4/spreadsheets/{MASTER_SPREADSHEET_ID}/values/メンバー!A:D:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS"
-    payload = {"values": [[line_user_id, name, '', email]]}
-    resp = requests.post(url, json=payload, headers={
-        "Authorization": f"Bearer {token}",
-        "Content-Type": "application/json"
-    })
-    resp.raise_for_status()
-
-    # BotからLINEに確認メッセージを送信
+    # 二重登録チェック
     if line_user_id:
-        with ApiClient(configuration) as api_client:
-            MessagingApi(api_client).push_message(
-                push_message_request=PushMessageRequest(
-                    to=line_user_id,
-                    messages=[TextMessage(
-                        text=(
-                            f"✅ 登録完了しました！\n\n"
-                            f"お名前：{name}\n"
-                            f"メール：{email}\n\n"
-                            "担当者がスプレッドシートを準備してご連絡します。\n"
-                            "もうしばらくお待ちください🙏"
-                        )
-                    )]
-                )
-            )
+        existing = get_member(line_user_id, token)
+        if existing:
+            resp = app.make_response(({'status': 'already_registered'}, 200))
+            resp.headers['Access-Control-Allow-Origin'] = '*'
+            return resp
+
+    # マスタースプシに記録
+    append_member(line_user_id, name, email, token)
+
+    # LINEに確認メッセージを送信
+    if line_user_id:
+        push_text(
+            line_user_id,
+            f"✅ 登録完了しました！\n\n"
+            f"お名前：{name}\n"
+            f"メール：{email}\n\n"
+            "担当者がスプレッドシートを準備してご連絡します。\n"
+            "もうしばらくお待ちください🙏"
+        )
 
     resp = app.make_response(({'status': 'ok'}, 200))
     resp.headers['Access-Control-Allow-Origin'] = '*'
     return resp
 
-WELCOME_MESSAGE = """\
-━━━━━━━━━━━━━━━━━━━
-🎙️ 音声日報サービスへようこそ！
-━━━━━━━━━━━━━━━━━━━
-
-このアカウントでできること：
-
-🎤 毎日の業務を「音声を送るだけ」で日報が完成
-📋 話した内容をAIが自動で整理・記録
-📊 スプレッドシートに自動で書き込み
-💬 チームへの共有も同時に行えます
-
-手入力は一切不要。帰り道や移動中に
-今日の業務をひとこと話すだけでOKです。
-
-━━━━━━━━━━━━━━━━━━━
-ご利用にはひとつだけ登録が必要です。
-
-👇 フルネームをこのトーク画面に
-　　入力して送信してください。
-
-例）桂太郎
-━━━━━━━━━━━━━━━━━━━\
-"""
-
-def looks_like_name(text):
-    if len(text) > 12 or len(text) < 2:
-        return False
-    question_words = ['？', '?', '何', 'どう', 'いつ', 'どこ', 'なぜ', 'どれ', 'どの', 'http', 'できる', 'ですか', 'ますか']
-    return not any(w in text for w in question_words)
+# ========== LINE event handlers ==========
 
 @handler.add(FollowEvent)
 def handle_follow(event):
-    user_id = event.source.user_id
-    waiting_for_name.add(user_id)
-    with ApiClient(configuration) as api_client:
-        MessagingApi(api_client).reply_message(
-            ReplyMessageRequest(
-                reply_token=event.reply_token,
-                messages=[TextMessage(text=WELCOME_MESSAGE)]
-            )
-        )
+    reply_text(event.reply_token, WELCOME_MESSAGE)
 
 @handler.add(MessageEvent, message=TextMessageContent)
 def handle_text(event):
     user_id = event.source.user_id
     text = event.message.text.strip()
 
-    # 登録状況をスプシで確認（サーバー再起動後のリカバリー）
-    if user_id not in waiting_for_name:
-        token = get_sheets_token()
-        member = get_member(user_id, token)
-        if member is None:
-            # 未登録 → 名前入力待ちに追加してウェルカムを再送
-            waiting_for_name.add(user_id)
-            with ApiClient(configuration) as api_client:
-                MessagingApi(api_client).reply_message(
-                    ReplyMessageRequest(
-                        reply_token=event.reply_token,
-                        messages=[TextMessage(text=WELCOME_MESSAGE)]
-                    )
-                )
-            return
-        elif not member.get('spreadsheet_id'):
-            with ApiClient(configuration) as api_client:
-                MessagingApi(api_client).reply_message(
-                    ReplyMessageRequest(
-                        reply_token=event.reply_token,
-                        messages=[TextMessage(text="担当者がスプレッドシートを準備中です。もうしばらくお待ちください🙏")]
-                    )
-                )
-            return
-        else:
-            with ApiClient(configuration) as api_client:
-                MessagingApi(api_client).reply_message(
-                    ReplyMessageRequest(
-                        reply_token=event.reply_token,
-                        messages=[TextMessage(text="🎙️ 音声メッセージを送ると日報を記録できます。\nマイクボタンを長押しして話してみてください！")]
-                    )
-                )
-            return
-
-    if not looks_like_name(text):
-        with ApiClient(configuration) as api_client:
-            MessagingApi(api_client).reply_message(
-                ReplyMessageRequest(
-                    reply_token=event.reply_token,
-                    messages=[TextMessage(
-                        text=(
-                            "フルネームの入力をお願いします🙏\n\n"
-                            "例）桂太郎\n\n"
-                            "ご不明な点は担当者までお問い合わせください。"
-                        )
-                    )]
-                )
-            )
+    # 修正モード：「修正する」を押してテキストを送ってきた場合
+    if user_id in pending_correction:
+        pending_correction.discard(user_id)
+        try:
+            structured = call_gemini_text(text)
+            pending[user_id] = structured
+            send_confirm(event.reply_token, structured)
+        except requests.exceptions.Timeout:
+            reply_text(event.reply_token, "⏱️ AIの処理に時間がかかっています。\nもう一度送ってください。")
+        except Exception:
+            reply_text(event.reply_token, "⚠️ 処理中にエラーが発生しました。\nもう一度送ってください。")
         return
 
-    waiting_for_name.discard(user_id)
+    # 登録状況を確認
     token = get_sheets_token()
-    append_member(user_id, text, token)
+    member = get_member(user_id, token)
 
-    with ApiClient(configuration) as api_client:
-        MessagingApi(api_client).reply_message(
-            ReplyMessageRequest(
-                reply_token=event.reply_token,
-                messages=[TextMessage(
-                    text=(
-                        f"✅ 登録完了しました！\n\n"
-                        f"お名前：{text}\n\n"
-                        "担当者がスプレッドシートを準備してご連絡します。\n"
-                        "ご連絡後すぐに音声日報をご利用いただけます。\n\n"
-                        "もうしばらくお待ちください。"
-                    )
-                )]
-            )
-        )
+    if member is None:
+        reply_text(event.reply_token, NOT_REGISTERED_MESSAGE)
+        return
+
+    if not member.get('spreadsheet_id'):
+        reply_text(event.reply_token, WAITING_SHEET_MESSAGE)
+        return
+
+    reply_text(event.reply_token, AUDIO_GUIDE_MESSAGE)
 
 @handler.add(MessageEvent, message=AudioMessageContent)
 def handle_audio(event):
     user_id = event.source.user_id
 
+    # 登録状況を確認
+    token = get_sheets_token()
+    member = get_member(user_id, token)
+
+    if member is None:
+        reply_text(event.reply_token, NOT_REGISTERED_MESSAGE)
+        return
+
+    if not member.get('spreadsheet_id'):
+        reply_text(event.reply_token, WAITING_SHEET_MESSAGE)
+        return
+
+    # 修正モードを解除（音声で修正する場合も通常処理へ）
+    pending_correction.discard(user_id)
+
+    # 音声データを取得
     with ApiClient(configuration) as api_client:
         audio_bytes = MessagingApiBlob(api_client).get_message_content(event.message.id)
 
@@ -381,14 +432,20 @@ def handle_audio(event):
         with open(audio_path, 'rb') as f:
             audio_b64 = base64.b64encode(f.read()).decode()
 
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
-        payload = {"contents": [{"parts": [
-            {"inline_data": {"mime_type": "audio/mp4", "data": audio_b64}},
-            {"text": PROMPT}
-        ]}]}
-        resp = requests.post(url, json=payload, timeout=120)
-        resp.raise_for_status()
-        structured = resp.json()['candidates'][0]['content']['parts'][0]['text'].strip()
+        try:
+            structured = call_gemini_audio(audio_b64)
+        except requests.exceptions.Timeout:
+            reply_text(
+                event.reply_token,
+                "⏱️ AIの処理に時間がかかっています。\nしばらくしてからもう一度送ってください。"
+            )
+            return
+        except Exception:
+            reply_text(
+                event.reply_token,
+                "⚠️ 音声の解析に失敗しました。\n少し長めに話して、もう一度送ってください。\n（目安：30秒以上）"
+            )
+            return
 
         pending[user_id] = structured
         send_confirm(event.reply_token, structured)
@@ -401,24 +458,23 @@ def handle_postback(event):
     user_id = event.source.user_id
     data = event.postback.data
 
-    with ApiClient(configuration) as api_client:
-        api = MessagingApi(api_client)
+    if data == 'confirm_yes':
+        structured = pending.get(user_id, '')
+        sheet_name = record_to_sheet(user_id, structured)
+        if sheet_name:
+            msg = f"✅ {sheet_name}の日報をスプレッドシートに記録しました！"
+        else:
+            msg = "✅ 確認しました。\n（スプレッドシート未設定のためスキップしました）"
+        reply_text(event.reply_token, msg)
+        pending.pop(user_id, None)
 
-        if data == 'confirm_yes':
-            structured = pending.get(user_id, '')
-            success = record_to_sheet(user_id, structured)
-            msg = '✅ スプレッドシートに記録しました！' if success else '✅ 確認しました。\n（スプレッドシート未登録のためスキップ）'
-            api.reply_message(ReplyMessageRequest(
-                reply_token=event.reply_token,
-                messages=[TextMessage(text=msg)]
-            ))
-            pending.pop(user_id, None)
-
-        elif data == 'confirm_no':
-            api.reply_message(ReplyMessageRequest(
-                reply_token=event.reply_token,
-                messages=[TextMessage(text='修正内容を音声またはテキストで送ってください。')]
-            ))
+    elif data == 'confirm_no':
+        pending_correction.add(user_id)
+        reply_text(
+            event.reply_token,
+            "修正内容を音声またはテキストで送ってください。\n"
+            "例）「3時間目の活動を農地整備に変えて」"
+        )
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 8000))
