@@ -10,7 +10,7 @@ from linebot.v3 import WebhookHandler
 from linebot.v3.exceptions import InvalidSignatureError
 from linebot.v3.messaging import (
     Configuration, ApiClient, MessagingApi, MessagingApiBlob,
-    ReplyMessageRequest, TextMessage,
+    ReplyMessageRequest, PushMessageRequest, TextMessage,
     QuickReply, QuickReplyItem, PostbackAction
 )
 from linebot.v3.webhooks import (
@@ -198,6 +198,47 @@ def webhook():
 @app.route('/health', methods=['GET'])
 def health():
     return 'OK'
+
+@app.route('/register', methods=['POST'])
+def register():
+    data = request.get_json()
+    line_user_id = data.get('line_user_id', '')
+    name = data.get('name', '')
+    email = data.get('email', '')
+
+    if not name or not email:
+        return {'error': 'missing fields'}, 400
+
+    token = get_sheets_token()
+
+    # 管理スプシに記録（LINE ID・名前・メールアドレス・スプシID空欄）
+    url = f"https://sheets.googleapis.com/v4/spreadsheets/{MASTER_SPREADSHEET_ID}/values/メンバー!A:D:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS"
+    payload = {"values": [[line_user_id, name, '', email]]}
+    resp = requests.post(url, json=payload, headers={
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json"
+    })
+    resp.raise_for_status()
+
+    # BotからLINEに確認メッセージを送信
+    if line_user_id:
+        with ApiClient(configuration) as api_client:
+            MessagingApi(api_client).push_message(
+                push_message_request=PushMessageRequest(
+                    to=line_user_id,
+                    messages=[TextMessage(
+                        text=(
+                            f"✅ 登録完了しました！\n\n"
+                            f"お名前：{name}\n"
+                            f"メール：{email}\n\n"
+                            "担当者がスプレッドシートを準備してご連絡します。\n"
+                            "もうしばらくお待ちください🙏"
+                        )
+                    )]
+                )
+            )
+
+    return {'status': 'ok'}, 200
 
 WELCOME_MESSAGE = """\
 ━━━━━━━━━━━━━━━━━━━
