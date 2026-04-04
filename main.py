@@ -199,6 +199,37 @@ def webhook():
 def health():
     return 'OK'
 
+WELCOME_MESSAGE = """\
+━━━━━━━━━━━━━━━━━━━
+🎙️ 音声日報サービスへようこそ！
+━━━━━━━━━━━━━━━━━━━
+
+このアカウントでできること：
+
+🎤 毎日の業務を「音声を送るだけ」で日報が完成
+📋 話した内容をAIが自動で整理・記録
+📊 スプレッドシートに自動で書き込み
+💬 チームへの共有も同時に行えます
+
+手入力は一切不要。帰り道や移動中に
+今日の業務をひとこと話すだけでOKです。
+
+━━━━━━━━━━━━━━━━━━━
+ご利用にはひとつだけ登録が必要です。
+
+👇 フルネームをこのトーク画面に
+　　入力して送信してください。
+
+例）桂太郎
+━━━━━━━━━━━━━━━━━━━\
+"""
+
+def looks_like_name(text):
+    if len(text) > 12 or len(text) < 2:
+        return False
+    question_words = ['？', '?', '何', 'どう', 'いつ', 'どこ', 'なぜ', 'どれ', 'どの', 'http', 'できる', 'ですか', 'ますか']
+    return not any(w in text for w in question_words)
+
 @handler.add(FollowEvent)
 def handle_follow(event):
     user_id = event.source.user_id
@@ -207,14 +238,7 @@ def handle_follow(event):
         MessagingApi(api_client).reply_message(
             ReplyMessageRequest(
                 reply_token=event.reply_token,
-                messages=[TextMessage(
-                    text=(
-                        "🎉 友だち追加ありがとうございます！\n\n"
-                        "このBotは音声で業務日報を自動記録します。\n\n"
-                        "はじめに、フルネームを入力してください。\n"
-                        "例：南井賢大"
-                    )
-                )]
+                messages=[TextMessage(text=WELCOME_MESSAGE)]
             )
         )
 
@@ -224,6 +248,22 @@ def handle_text(event):
     text = event.message.text.strip()
 
     if user_id not in waiting_for_name:
+        return
+
+    if not looks_like_name(text):
+        with ApiClient(configuration) as api_client:
+            MessagingApi(api_client).reply_message(
+                ReplyMessageRequest(
+                    reply_token=event.reply_token,
+                    messages=[TextMessage(
+                        text=(
+                            "フルネームの入力をお願いします🙏\n\n"
+                            "例）桂太郎\n\n"
+                            "ご不明な点は担当者までお問い合わせください。"
+                        )
+                    )]
+                )
+            )
         return
 
     waiting_for_name.discard(user_id)
@@ -236,10 +276,11 @@ def handle_text(event):
                 reply_token=event.reply_token,
                 messages=[TextMessage(
                     text=(
-                        f"✅ 登録しました！\n\n"
+                        f"✅ 登録完了しました！\n\n"
                         f"お名前：{text}\n\n"
                         "担当者がスプレッドシートを準備してご連絡します。\n"
-                        "準備が完了すると音声で日報を送れるようになります。"
+                        "ご連絡後すぐに音声日報をご利用いただけます。\n\n"
+                        "もうしばらくお待ちください。"
                     )
                 )]
             )
