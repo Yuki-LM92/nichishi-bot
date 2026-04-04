@@ -380,16 +380,19 @@ def register():
     # マスタースプシに記録
     append_member(line_user_id, name, email, token)
 
-    # LINEに確認メッセージを送信
-    if line_user_id:
-        push_text(
-            line_user_id,
-            f"✅ 登録完了しました！\n\n"
-            f"お名前：{name}\n"
-            f"メール：{email}\n\n"
-            "担当者がスプレッドシートを準備してご連絡します。\n"
-            "もうしばらくお待ちください🙏"
-        )
+    # Slackに登録通知を送信
+    if SLACK_WEBHOOK_URL:
+        try:
+            requests.post(SLACK_WEBHOOK_URL, json={
+                "text": (
+                    f"📝 *新規メンバーが登録しました*\n\n"
+                    f"お名前：{name}\n"
+                    f"メール：{email}\n\n"
+                    "スプレッドシートを準備してマスタースプシのC列にURLを貼り付けてください。"
+                )
+            }, timeout=10)
+        except Exception:
+            pass
 
     resp = app.make_response(({'status': 'ok'}, 200))
     resp.headers['Access-Control-Allow-Origin'] = '*'
