@@ -26,6 +26,7 @@ LINE_CHANNEL_SECRET = os.environ['LINE_CHANNEL_SECRET']
 LINE_CHANNEL_ACCESS_TOKEN = os.environ['LINE_CHANNEL_ACCESS_TOKEN']
 GEMINI_API_KEY = os.environ['GEMINI_API_KEY']
 MASTER_SPREADSHEET_ID = os.environ['MASTER_SPREADSHEET_ID']
+SLACK_WEBHOOK_URL = os.environ.get('SLACK_WEBHOOK_URL', '')  # 未設定時はSlack通知をスキップ
 
 configuration = Configuration(access_token=LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
@@ -172,11 +173,11 @@ def write_to_sheet(spreadsheet_id, sheet_title, name, structured_text, token):
     resp.raise_for_status()
 
 def record_to_sheet(user_id, structured_text):
-    """記録成功時はシート名を返す。失敗時はNoneを返す。"""
+    """記録成功時は (sheet_title, member_name) を返す。失敗時は (None, None) を返す。"""
     token = get_sheets_token()
     member = get_member(user_id, token)
     if not member or not member.get('spreadsheet_id'):
-        return None
+        return None, None
     spreadsheet_id = member['spreadsheet_id']
     name = member['name']
     today = datetime.now()
@@ -184,10 +185,41 @@ def record_to_sheet(user_id, structured_text):
 
     template_id = get_template_sheet_id(spreadsheet_id, token)
     if template_id is None:
-        return None
+        return None, None
     copy_template(spreadsheet_id, template_id, sheet_title, token)
     write_to_sheet(spreadsheet_id, sheet_title, name, structured_text, token)
-    return sheet_title
+    return sheet_title, name
+
+# ========== Slack ==========
+
+def extract_notes(structured_text):
+    """構造化テキストから共有事項を抽出する。"""
+    notes = ''
+    mode = None
+    for line in structured_text.split('\n'):
+        line = line.strip()
+        if line.startswith('📣'):
+            mode = 'notes'
+            notes = line.replace('📣 共有事項：', '').strip()
+        elif mode == 'notes' and line:
+            notes += '\n' + line
+    return notes
+
+def send_to_slack(member_name, sheet_title, structured_text):
+    """共有事項をSlackに送信する。SLACK_WEBHOOK_URLが未設定なら何もしない。"""
+    if not SLACK_WEBHOOK_URL:
+        return
+    notes = extract_notes(structured_text)
+    if not notes or notes == 'なし':
+        return
+    text = (
+        f"📋 *{member_name}さんの日報（{sheet_title}）*\n\n"
+        f"📣 共有事項：\n{notes}"
+    )
+    try:
+        requests.post(SLACK_WEBHOOK_URL, json={"text": text}, timeout=10)
+    except Exception:
+        pass  # Slack通知の失敗は日報記録に影響させない
 
 # ========== Gemini ==========
 
@@ -460,9 +492,10 @@ def handle_postback(event):
 
     if data == 'confirm_yes':
         structured = pending.get(user_id, '')
-        sheet_name = record_to_sheet(user_id, structured)
+        sheet_name, member_name = record_to_sheet(user_id, structured)
         if sheet_name:
             msg = f"✅ {sheet_name}の日報をスプレッドシートに記録しました！"
+            send_to_slack(member_name, sheet_name, structured)
         else:
             msg = "✅ 確認しました。\n（スプレッドシート未設定のためスキップしました）"
         reply_text(event.reply_token, msg)
