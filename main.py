@@ -24,13 +24,10 @@ app = Flask(__name__)
 LINE_CHANNEL_SECRET = os.environ['LINE_CHANNEL_SECRET']
 LINE_CHANNEL_ACCESS_TOKEN = os.environ['LINE_CHANNEL_ACCESS_TOKEN']
 GEMINI_API_KEY = os.environ['GEMINI_API_KEY']
-MEMBERS_JSON = os.environ.get('MEMBERS_JSON', '{}')
+MASTER_SPREADSHEET_ID = os.environ['MASTER_SPREADSHEET_ID']
 
 configuration = Configuration(access_token=LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
-
-# メンバー設定: LINE ID → {name, spreadsheet_id}
-MEMBERS = json.loads(MEMBERS_JSON)
 
 # 確認待ちの内容を一時保存
 pending = {}
@@ -54,6 +51,15 @@ PROMPT = """
 """
 
 # ========== Sheets API ==========
+
+def get_member(user_id, token):
+    url = f"https://sheets.googleapis.com/v4/spreadsheets/{MASTER_SPREADSHEET_ID}/values/メンバー!A2:C"
+    resp = requests.get(url, headers={"Authorization": f"Bearer {token}"})
+    resp.raise_for_status()
+    for row in resp.json().get('values', []):
+        if len(row) >= 3 and row[0] == user_id:
+            return {'name': row[1], 'spreadsheet_id': row[2]}
+    return None
 
 def get_sheets_token():
     creds, _ = google.auth.default(
@@ -132,7 +138,8 @@ def write_to_sheet(spreadsheet_id, sheet_title, name, structured_text, token):
     resp.raise_for_status()
 
 def record_to_sheet(user_id, structured_text):
-    member = MEMBERS.get(user_id)
+    token = get_sheets_token()
+    member = get_member(user_id, token)
     if not member:
         return False
     spreadsheet_id = member['spreadsheet_id']
@@ -140,7 +147,6 @@ def record_to_sheet(user_id, structured_text):
     today = datetime.now()
     sheet_title = f"{today.month}月{today.day}日"
 
-    token = get_sheets_token()
     template_id = get_template_sheet_id(spreadsheet_id, token)
     if template_id is None:
         return False
