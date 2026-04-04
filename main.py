@@ -199,8 +199,14 @@ def webhook():
 def health():
     return 'OK'
 
-@app.route('/register', methods=['POST'])
+@app.route('/register', methods=['POST', 'OPTIONS'])
 def register():
+    if request.method == 'OPTIONS':
+        resp = app.make_default_options_response()
+        resp.headers['Access-Control-Allow-Origin'] = '*'
+        resp.headers['Access-Control-Allow-Headers'] = 'Content-Type'
+        resp.headers['Access-Control-Allow-Methods'] = 'POST'
+        return resp
     data = request.get_json()
     line_user_id = data.get('line_user_id', '')
     name = data.get('name', '')
@@ -238,7 +244,9 @@ def register():
                 )
             )
 
-    return {'status': 'ok'}, 200
+    resp = app.make_response(({'status': 'ok'}, 200))
+    resp.headers['Access-Control-Allow-Origin'] = '*'
+    return resp
 
 WELCOME_MESSAGE = """\
 ━━━━━━━━━━━━━━━━━━━
