@@ -247,8 +247,39 @@ def handle_text(event):
     user_id = event.source.user_id
     text = event.message.text.strip()
 
+    # 登録状況をスプシで確認（サーバー再起動後のリカバリー）
     if user_id not in waiting_for_name:
-        return
+        token = get_sheets_token()
+        member = get_member(user_id, token)
+        if member is None:
+            # 未登録 → 名前入力待ちに追加してウェルカムを再送
+            waiting_for_name.add(user_id)
+            with ApiClient(configuration) as api_client:
+                MessagingApi(api_client).reply_message(
+                    ReplyMessageRequest(
+                        reply_token=event.reply_token,
+                        messages=[TextMessage(text=WELCOME_MESSAGE)]
+                    )
+                )
+            return
+        elif not member.get('spreadsheet_id'):
+            with ApiClient(configuration) as api_client:
+                MessagingApi(api_client).reply_message(
+                    ReplyMessageRequest(
+                        reply_token=event.reply_token,
+                        messages=[TextMessage(text="担当者がスプレッドシートを準備中です。もうしばらくお待ちください🙏")]
+                    )
+                )
+            return
+        else:
+            with ApiClient(configuration) as api_client:
+                MessagingApi(api_client).reply_message(
+                    ReplyMessageRequest(
+                        reply_token=event.reply_token,
+                        messages=[TextMessage(text="🎙️ 音声メッセージを送ると日報を記録できます。\nマイクボタンを長押しして話してみてください！")]
+                    )
+                )
+            return
 
     if not looks_like_name(text):
         with ApiClient(configuration) as api_client:
