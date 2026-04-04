@@ -1,0 +1,4 @@
+flask==3.0.3
+line-bot-sdk==3.12.0
+google-generativeai==0.7.2
+gunicorn==21.2.0
