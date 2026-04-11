@@ -73,6 +73,28 @@ TEXT_PROMPT = """
 テキスト：
 """
 
+CORRECTION_PROMPT = """
+あなたは地域おこし協力隊の業務日報の記録係です。
+以下の「現在の日報」に対して「修正指示」を適用し、修正後の日報を出力してください。
+
+ルール：
+- 修正指示に含まれる変更のみを反映し、それ以外の内容はそのまま維持する
+- 以下のフォーマットだけで出力すること（余計な説明は不要）：
+
+📅 日付：（言及があれば。なければ空欄）
+⏰ 活動内容：
+・[時間帯があれば] 活動内容
+・[時間帯があれば] 活動内容
+（時間の言及がない場合はそのまま箇条書き）
+📣 共有事項：（上司や仲間にSlackで伝えたいことがあれば記載。なければ「なし」）
+
+現在の日報：
+{original}
+
+修正指示：
+{correction}
+"""
+
 # ========== Sheets API ==========
 
 def get_sheets_token():
@@ -258,6 +280,21 @@ def call_gemini_text(text):
         raise ValueError("Gemini returned empty text")
     return result
 
+def call_gemini_correction(original, correction):
+    """元の日報と修正指示をGeminiに送り、修正済み日報を返す。失敗時は例外を投げる。"""
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
+    prompt = CORRECTION_PROMPT.format(original=original, correction=correction)
+    payload = {"contents": [{"parts": [{"text": prompt}]}]}
+    resp = requests.post(url, json=payload, timeout=60)
+    resp.raise_for_status()
+    candidates = resp.json().get('candidates', [])
+    if not candidates:
+        raise ValueError("Gemini returned empty candidates")
+    result = candidates[0]['content']['parts'][0]['text'].strip()
+    if not result:
+        raise ValueError("Gemini returned empty text")
+    return result
+
 # ========== LINE helpers ==========
 
 def send_confirm(reply_token, structured_text):
@@ -422,7 +459,8 @@ def handle_text(event):
         pending_correction.discard(user_id)
         reply_text(event.reply_token, "✏️ 修正内容を受け取りました！\nAIが整理しています...")
         try:
-            structured = call_gemini_text(text)
+            original = pending.get(user_id, '')
+            structured = call_gemini_correction(original, text)
             pending[user_id] = structured
             with ApiClient(configuration) as api_client:
                 MessagingApi(api_client).push_message(
