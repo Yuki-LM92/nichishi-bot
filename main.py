@@ -248,7 +248,8 @@ def create_user_spreadsheet(name, email, token):
 def get_template_sheet_id(spreadsheet_id, token):
     url = f"https://sheets.googleapis.com/v4/spreadsheets/{spreadsheet_id}"
     resp = requests.get(url, headers={"Authorization": f"Bearer {token}"})
-    resp.raise_for_status()
+    if not resp.ok:
+        raise ValueError(f"スプシ取得失敗 ID={repr(spreadsheet_id)} status={resp.status_code} body={resp.text[:200]}")
     for sheet in resp.json().get('sheets', []):
         if sheet['properties']['title'] == TEMPLATE_SHEET_NAME:
             return sheet['properties']['sheetId']
