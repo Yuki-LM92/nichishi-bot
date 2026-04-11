@@ -115,6 +115,55 @@ def get_sheets_token():
     creds.refresh(google.auth.transport.requests.Request())
     return creds.token
 
+PENDING_SHEET = 'pending_states'
+
+def _pending_rows(token):
+    url = f"https://sheets.googleapis.com/v4/spreadsheets/{MASTER_SPREADSHEET_ID}/values/{PENDING_SHEET}!A:B"
+    resp = requests.get(url, headers={"Authorization": f"Bearer {token}"})
+    if resp.status_code != 200:
+        return []
+    return resp.json().get('values', [])
+
+def pending_get(user_id, token):
+    """メモリになければSpreadsheetから取得する"""
+    if user_id in pending:
+        return pending[user_id]
+    for row in _pending_rows(token):
+        if len(row) >= 2 and row[0] == user_id and row[1]:
+            pending[user_id] = row[1]  # キャッシュ
+            return row[1]
+    return ''
+
+def pending_set(user_id, text, token):
+    """メモリとSpreadsheet両方に保存する"""
+    pending[user_id] = text
+    rows = _pending_rows(token)
+    for i, row in enumerate(rows):
+        if row and row[0] == user_id:
+            row_num = i + 1
+            url = (f"https://sheets.googleapis.com/v4/spreadsheets/{MASTER_SPREADSHEET_ID}"
+                   f"/values/{PENDING_SHEET}!A{row_num}:B{row_num}?valueInputOption=RAW")
+            requests.put(url, json={"values": [[user_id, text]]},
+                         headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"})
+            return
+    url = (f"https://sheets.googleapis.com/v4/spreadsheets/{MASTER_SPREADSHEET_ID}"
+           f"/values/{PENDING_SHEET}!A:B:append?valueInputOption=RAW&insertDataOption=INSERT_ROWS")
+    requests.post(url, json={"values": [[user_id, text]]},
+                  headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"})
+
+def pending_del(user_id, token):
+    """メモリとSpreadsheet両方から削除する"""
+    pending.pop(user_id, None)
+    rows = _pending_rows(token)
+    for i, row in enumerate(rows):
+        if row and row[0] == user_id:
+            row_num = i + 1
+            url = (f"https://sheets.googleapis.com/v4/spreadsheets/{MASTER_SPREADSHEET_ID}"
+                   f"/values/{PENDING_SHEET}!A{row_num}:B{row_num}?valueInputOption=RAW")
+            requests.put(url, json={"values": [['', '']]},
+                         headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"})
+            return
+
 def get_all_members(token):
     """メンバーシートの全行を取得する"""
     # 列順: A=名前, B=email, C=LINE_ID, D=spreadsheet_id, E=更新日付
@@ -594,7 +643,11 @@ def handle_text(event):
     # 処理中キャンセル
     if text == 'キャンセル':
         pending_cancel.add(user_id)
-        pending.pop(user_id, None)
+        try:
+            _token = get_sheets_token()
+            pending_del(user_id, _token)
+        except Exception:
+            pending.pop(user_id, None)
         pending_correction.discard(user_id)
         pending_feedback.pop(user_id, None)
         reply_text(event.reply_token, "⛔ キャンセルしました。\n処理中の場合も完了後に破棄します。")
@@ -617,9 +670,10 @@ def handle_text(event):
         pending_correction.discard(user_id)
         reply_text(event.reply_token, "✏️ 修正内容を受け取りました！\nAIが整理しています...")
         try:
-            original = pending.get(user_id, '')
+            token = get_sheets_token()
+            original = pending_get(user_id, token)
             structured = call_gemini_correction(original, text)
-            pending[user_id] = structured
+            pending_set(user_id, structured, token)
             with ApiClient(configuration) as api_client:
                 MessagingApi(api_client).push_message(
                     push_message_request=PushMessageRequest(
@@ -708,7 +762,7 @@ def handle_audio(event):
             push_text(user_id, "⛔ キャンセル済みのため、記録しませんでした。")
             return
 
-        pending[user_id] = structured
+        pending_set(user_id, structured, token)
 
         # 結果はpush_messageで送る（reply_tokenは使用済みのため）
         with ApiClient(configuration) as api_client:
@@ -737,7 +791,8 @@ def handle_postback(event):
     data = event.postback.data
 
     if data == 'confirm_yes':
-        structured = pending.get(user_id, '')
+        token = get_sheets_token()
+        structured = pending_get(user_id, token)
         if not structured:
             reply_text(event.reply_token, "⚠️ 記録する内容が見つかりませんでした。\nもう一度音声を送ってください。")
             return
@@ -746,11 +801,10 @@ def handle_postback(event):
             if sheet_name:
                 reply_text(event.reply_token, f"✅ {sheet_name}の日報をスプレッドシートに記録しました！")
                 send_to_slack(member_name, sheet_name, structured)
-                pending.pop(user_id, None)
+                pending_del(user_id, token)
             else:
-                # スプシ未設定などで記録できなかった場合もリトライ不要なので削除
                 reply_text(event.reply_token, "⚠️ スプレッドシートへの記録に失敗しました。\n管理者にお問い合わせください。")
-                pending.pop(user_id, None)
+                pending_del(user_id, token)
         except Exception as e:
             # エラー時はpendingを保持してリトライを促す
             reply_text(event.reply_token, f"⚠️ エラー：{e}")
@@ -778,7 +832,11 @@ def handle_postback(event):
         )
 
     elif data == 'confirm_cancel':
-        pending.pop(user_id, None)
+        try:
+            _token = get_sheets_token()
+            pending_del(user_id, _token)
+        except Exception:
+            pending.pop(user_id, None)
         pending_correction.discard(user_id)
         reply_text(event.reply_token, "キャンセルしました。\n記録は行われていません。")
 
