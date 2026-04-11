@@ -41,6 +41,8 @@ pending = {}
 pending_correction = set()
 # フィードバック収集中 (user_id → {'category': str})
 pending_feedback = {}
+# 処理中にキャンセルを要求したユーザー
+pending_cancel = set()
 
 TEMPLATE_SHEET_NAME = '●月●日（テンプレート）'
 LIFF_URL = 'https://liff.line.me/2009693703-ONMSHAXr'
@@ -581,6 +583,15 @@ def handle_text(event):
     user_id = event.source.user_id
     text = event.message.text.strip()
 
+    # 処理中キャンセル
+    if text == 'キャンセル':
+        pending_cancel.add(user_id)
+        pending.pop(user_id, None)
+        pending_correction.discard(user_id)
+        pending_feedback.pop(user_id, None)
+        reply_text(event.reply_token, "⛔ キャンセルしました。\n処理中の場合も完了後に破棄します。")
+        return
+
     # フィードバック収集モード
     if user_id in pending_feedback:
         category = pending_feedback.pop(user_id)['category']
@@ -680,6 +691,12 @@ def handle_audio(event):
             return
         except Exception:
             push_text(user_id, "⚠️ 音声の解析に失敗しました。\n少し長めに話して、もう一度送ってください。\n（目安：30秒以上）")
+            return
+
+        # キャンセルされていたら破棄
+        if user_id in pending_cancel:
+            pending_cancel.discard(user_id)
+            push_text(user_id, "⛔ キャンセル済みのため、記録しませんでした。")
             return
 
         pending[user_id] = structured
