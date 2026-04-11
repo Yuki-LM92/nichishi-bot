@@ -437,6 +437,19 @@ def register():
             except Exception:
                 pass
 
+        # 登録完了メッセージ＋ガイドURLをLINEに送信
+        if line_user_id:
+            try:
+                push_text(
+                    line_user_id,
+                    "✅ 登録が完了しました！\n\n"
+                    "準備ができたら音声を送ってみてください🎤\n\n"
+                    "📖 使い方ガイドはこちら：\n"
+                    "https://yuki-lm92.github.io/nichishi-register/guide.html"
+                )
+            except Exception:
+                pass
+
         return cors_response({'status': 'ok'})
 
     except Exception as e:
@@ -594,6 +607,25 @@ def handle_postback(event):
         pending.pop(user_id, None)
         pending_correction.discard(user_id)
         reply_text(event.reply_token, "キャンセルしました。\n記録は行われていません。")
+
+    elif data == 'open_spreadsheet':
+        try:
+            token = get_sheets_token()
+            member = get_member(user_id, token)
+            if member and member.get('spreadsheet_id'):
+                reply_text(
+                    event.reply_token,
+                    f"📊 スプレッドシートはこちらです：\n{member['spreadsheet_id']}"
+                )
+            else:
+                reply_text(
+                    event.reply_token,
+                    "⏳ スプレッドシートはまだ準備中です。\n\n"
+                    "管理者が承認・設定するまで1〜3日かかる場合があります。\n"
+                    "準備ができたらご連絡しますので、もう少しお待ちください🙏"
+                )
+        except Exception:
+            reply_text(event.reply_token, "⚠️ 確認中にエラーが発生しました。\nしばらくしてからお試しください。")
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 8000))
