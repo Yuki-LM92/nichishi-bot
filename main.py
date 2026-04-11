@@ -26,9 +26,11 @@ LINE_CHANNEL_SECRET = os.environ['LINE_CHANNEL_SECRET']
 LINE_CHANNEL_ACCESS_TOKEN = os.environ['LINE_CHANNEL_ACCESS_TOKEN']
 GEMINI_API_KEY = os.environ['GEMINI_API_KEY']
 MASTER_SPREADSHEET_ID = os.environ['MASTER_SPREADSHEET_ID']
-SLACK_WEBHOOK_URL        = os.environ.get('SLACK_WEBHOOK_URL', '')
-RICHMENU_REGISTERED      = os.environ.get('RICHMENU_REGISTERED', '')
-RICHMENU_UNREGISTERED    = os.environ.get('RICHMENU_UNREGISTERED', '')
+SLACK_WEBHOOK_URL           = os.environ.get('SLACK_WEBHOOK_URL', '')
+RICHMENU_REGISTERED         = os.environ.get('RICHMENU_REGISTERED', '')
+RICHMENU_UNREGISTERED       = os.environ.get('RICHMENU_UNREGISTERED', '')
+TEMPLATE_SPREADSHEET_ID     = os.environ.get('TEMPLATE_SPREADSHEET_ID', '')
+ADMIN_EMAIL                 = os.environ.get('ADMIN_EMAIL', '')
 
 configuration = Configuration(access_token=LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
@@ -103,7 +105,10 @@ CORRECTION_PROMPT = """
 
 def get_sheets_token():
     creds, _ = google.auth.default(
-        scopes=['https://www.googleapis.com/auth/spreadsheets']
+        scopes=[
+            'https://www.googleapis.com/auth/spreadsheets',
+            'https://www.googleapis.com/auth/drive',
+        ]
     )
     creds.refresh(google.auth.transport.requests.Request())
     return creds.token
@@ -137,19 +142,49 @@ def is_duplicate(user_id, name, email, token):
             return True
     return False
 
-def append_member(user_id, name, email, token):
-    # 列順: A=名前, B=email, C=LINE_ID, D=spreadsheet_id, E=更新日付
+def append_member(user_id, name, email, token, spreadsheet_url=''):
+    # 列順: A=名前, B=email, C=LINE_ID, D=スプレッドシート編集用URL, E=更新日付
     now = datetime.now().strftime('%Y/%m/%d %H:%M')
     url = (
         f"https://sheets.googleapis.com/v4/spreadsheets/{MASTER_SPREADSHEET_ID}"
         f"/values/メンバー!A:E:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS"
     )
-    payload = {"values": [[name, email, user_id, '', now]]}
+    payload = {"values": [[name, email, user_id, spreadsheet_url, now]]}
     resp = requests.post(url, json=payload, headers={
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json"
     })
     resp.raise_for_status()
+
+def create_user_spreadsheet(name, email, token):
+    """テンプレートをコピーしてユーザー専用スプレッドシートを自動生成する"""
+    if not TEMPLATE_SPREADSHEET_ID:
+        return None, None
+
+    # テンプレートをコピー
+    resp = requests.post(
+        f'https://www.googleapis.com/drive/v3/files/{TEMPLATE_SPREADSHEET_ID}/copy',
+        json={'name': f'{name}さんの業務日誌'},
+        headers={'Authorization': f'Bearer {token}', 'Content-Type': 'application/json'},
+        timeout=30
+    )
+    resp.raise_for_status()
+    file_id = resp.json()['id']
+
+    # 管理者・ユーザーに共有
+    perm_url = f'https://www.googleapis.com/drive/v3/files/{file_id}/permissions'
+    for share_email in filter(None, [ADMIN_EMAIL, email]):
+        try:
+            requests.post(perm_url,
+                json={'type': 'user', 'role': 'writer', 'emailAddress': share_email},
+                headers={'Authorization': f'Bearer {token}', 'Content-Type': 'application/json'},
+                timeout=15
+            )
+        except Exception:
+            pass
+
+    spreadsheet_url = f'https://docs.google.com/spreadsheets/d/{file_id}/edit'
+    return file_id, spreadsheet_url
 
 def get_template_sheet_id(spreadsheet_id, token):
     url = f"https://sheets.googleapis.com/v4/spreadsheets/{spreadsheet_id}?fields=sheets.properties"
@@ -471,8 +506,15 @@ def register():
         if is_duplicate(line_user_id, name, email, token):
             return cors_response({'status': 'already_registered'})
 
-        # マスタースプシに記録
-        append_member(line_user_id, name, email, token)
+        # スプレッドシートを自動生成
+        spreadsheet_url = ''
+        try:
+            _, spreadsheet_url = create_user_spreadsheet(name, email, token)
+        except Exception:
+            pass  # 失敗しても登録は続行
+
+        # マスタースプシに記録（URLも同時に保存）
+        append_member(line_user_id, name, email, token, spreadsheet_url)
 
         # Slackに登録通知を送信
         if SLACK_WEBHOOK_URL:
@@ -491,13 +533,17 @@ def register():
         # 登録完了メッセージ＋ガイドURL送信＋リッチメニュー切り替え
         if line_user_id:
             try:
-                push_text(
-                    line_user_id,
-                    "✅ 登録が完了しました！\n\n"
-                    "準備ができたら音声を送ってみてください🎤\n\n"
+                msg = "✅ 登録が完了しました！\n\n"
+                if spreadsheet_url:
+                    msg += f"📊 あなた専用のスプレッドシートを作成しました：\n{spreadsheet_url}\n\n"
+                else:
+                    msg += "スプレッドシートは管理者が準備次第ご連絡します。\n\n"
+                msg += (
+                    "音声を送ってみてください🎤\n\n"
                     "📖 使い方ガイドはこちら：\n"
                     "https://yuki-lm92.github.io/nichishi-register/guide.html"
                 )
+                push_text(line_user_id, msg)
             except Exception:
                 pass
             link_rich_menu(line_user_id, RICHMENU_REGISTERED)
