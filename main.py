@@ -359,44 +359,51 @@ def register():
         resp.headers['Access-Control-Allow-Methods'] = 'POST'
         return resp
 
-    data = request.get_json()
-    line_user_id = data.get('line_user_id', '')
-    name = data.get('name', '').strip()
-    email = data.get('email', '').strip()
+    def cors_response(body, status=200):
+        resp = app.make_response((body, status))
+        resp.headers['Access-Control-Allow-Origin'] = '*'
+        return resp
 
-    if not name or not email:
-        return {'error': 'missing fields'}, 400
+    try:
+        data = request.get_json()
+        line_user_id = data.get('line_user_id', '')
+        name = data.get('name', '').strip()
+        email = data.get('email', '').strip()
 
-    token = get_sheets_token()
+        if not name or not email:
+            return cors_response({'error': 'missing fields'}, 400)
 
-    # 二重登録チェック
-    if line_user_id:
-        existing = get_member(line_user_id, token)
-        if existing:
-            resp = app.make_response(({'status': 'already_registered'}, 200))
-            resp.headers['Access-Control-Allow-Origin'] = '*'
-            return resp
+        token = get_sheets_token()
 
-    # マスタースプシに記録
-    append_member(line_user_id, name, email, token)
+        # 二重登録チェック
+        if line_user_id:
+            existing = get_member(line_user_id, token)
+            if existing:
+                return cors_response({'status': 'already_registered'})
 
-    # Slackに登録通知を送信
-    if SLACK_WEBHOOK_URL:
-        try:
-            requests.post(SLACK_WEBHOOK_URL, json={
-                "text": (
-                    f"📝 *新規メンバーが登録しました*\n\n"
-                    f"お名前：{name}\n"
-                    f"メール：{email}\n\n"
-                    "スプレッドシートを準備してマスタースプシのC列にURLを貼り付けてください。"
-                )
-            }, timeout=10)
-        except Exception:
-            pass
+        # マスタースプシに記録
+        append_member(line_user_id, name, email, token)
 
-    resp = app.make_response(({'status': 'ok'}, 200))
-    resp.headers['Access-Control-Allow-Origin'] = '*'
-    return resp
+        # Slackに登録通知を送信
+        if SLACK_WEBHOOK_URL:
+            try:
+                requests.post(SLACK_WEBHOOK_URL, json={
+                    "text": (
+                        f"📝 *新規メンバーが登録しました*\n\n"
+                        f"お名前：{name}\n"
+                        f"メール：{email}\n\n"
+                        "スプレッドシートを準備してマスタースプシのC列にURLを貼り付けてください。"
+                    )
+                }, timeout=10)
+            except Exception:
+                pass
+
+        return cors_response({'status': 'ok'})
+
+    except Exception as e:
+        import traceback
+        print(f"[register error] {traceback.format_exc()}")
+        return cors_response({'error': str(e)}, 500)
 
 # ========== LINE event handlers ==========
 
