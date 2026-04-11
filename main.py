@@ -730,12 +730,18 @@ def handle_postback(event):
 
     if data == 'confirm_yes':
         structured = pending.get(user_id, '')
-        sheet_name, member_name = record_to_sheet(user_id, structured)
-        if sheet_name:
-            msg = f"✅ {sheet_name}の日報をスプレッドシートに記録しました！"
-            send_to_slack(member_name, sheet_name, structured)
-        else:
-            msg = "✅ 確認しました。\n（スプレッドシート未設定のためスキップしました）"
+        if not structured:
+            reply_text(event.reply_token, "⚠️ 記録する内容が見つかりませんでした。\nもう一度音声を送ってください。")
+            return
+        try:
+            sheet_name, member_name = record_to_sheet(user_id, structured)
+            if sheet_name:
+                msg = f"✅ {sheet_name}の日報をスプレッドシートに記録しました！"
+                send_to_slack(member_name, sheet_name, structured)
+            else:
+                msg = "⚠️ スプレッドシートへの記録に失敗しました。\n管理者にお問い合わせください。"
+        except Exception as e:
+            msg = f"⚠️ 記録中にエラーが発生しました。\nしばらくしてから再試行するか、管理者にお問い合わせください。"
         reply_text(event.reply_token, msg)
         pending.pop(user_id, None)
 
