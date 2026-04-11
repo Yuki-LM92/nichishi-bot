@@ -8,3 +8,6 @@ steps:
       - --source=.
       - --region=asia-northeast1
       - --quiet
+
+options:
+  logging: CLOUD_LOGGING_ONLY
