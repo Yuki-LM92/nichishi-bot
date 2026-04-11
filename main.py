@@ -123,13 +123,21 @@ def get_all_members(token):
     resp.raise_for_status()
     return resp.json().get('values', [])
 
+def extract_spreadsheet_id(value):
+    """フルURLまたはIDそのものからスプレッドシートIDを抽出する。"""
+    if not value:
+        return ''
+    m = re.search(r'/spreadsheets/d/([a-zA-Z0-9_-]+)', value)
+    return m.group(1) if m else value
+
 def get_member(user_id, token):
     """LINE_IDでメンバー情報を取得。未登録ならNoneを返す。"""
     for row in get_all_members(token):
         if len(row) > 2 and row[2] == user_id:
+            raw = row[3] if len(row) > 3 else ''
             return {
                 'name': row[0] if len(row) > 0 else '',
-                'spreadsheet_id': row[3] if len(row) > 3 else ''
+                'spreadsheet_id': extract_spreadsheet_id(raw)
             }
     return None
 
@@ -741,7 +749,7 @@ def handle_postback(event):
             else:
                 msg = "⚠️ スプレッドシートへの記録に失敗しました。\n管理者にお問い合わせください。"
         except Exception as e:
-            msg = f"⚠️ 記録中にエラーが発生しました。\nエラー内容：{e}"
+            msg = "⚠️ 記録中にエラーが発生しました。\nしばらくしてから再試行するか、管理者にお問い合わせください。"
         reply_text(event.reply_token, msg)
         pending.pop(user_id, None)
 
