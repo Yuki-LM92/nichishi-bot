@@ -84,22 +84,24 @@ def get_sheets_token():
 
 def get_member(user_id, token):
     """マスタースプシからユーザー情報を取得。未登録ならNoneを返す。"""
-    url = f"https://sheets.googleapis.com/v4/spreadsheets/{MASTER_SPREADSHEET_ID}/values/メンバー!A2:C"
+    # 列順: A=名前, B=email, C=LINE_ID, D=spreadsheet_id
+    url = f"https://sheets.googleapis.com/v4/spreadsheets/{MASTER_SPREADSHEET_ID}/values/メンバー!A2:D"
     resp = requests.get(url, headers={"Authorization": f"Bearer {token}"})
     resp.raise_for_status()
     for row in resp.json().get('values', []):
-        if row and row[0] == user_id:
-            name = row[1] if len(row) > 1 else ''
-            spreadsheet_id = row[2] if len(row) > 2 else ''
+        if len(row) > 2 and row[2] == user_id:
+            name = row[0] if len(row) > 0 else ''
+            spreadsheet_id = row[3] if len(row) > 3 else ''
             return {'name': name, 'spreadsheet_id': spreadsheet_id}
     return None
 
 def append_member(user_id, name, email, token):
+    # 列順: A=名前, B=email, C=LINE_ID, D=spreadsheet_id
     url = (
         f"https://sheets.googleapis.com/v4/spreadsheets/{MASTER_SPREADSHEET_ID}"
         f"/values/メンバー!A:D:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS"
     )
-    payload = {"values": [[user_id, name, '', email]]}
+    payload = {"values": [[name, email, user_id, '']]}
     resp = requests.post(url, json=payload, headers={
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json"
