@@ -26,7 +26,9 @@ LINE_CHANNEL_SECRET = os.environ['LINE_CHANNEL_SECRET']
 LINE_CHANNEL_ACCESS_TOKEN = os.environ['LINE_CHANNEL_ACCESS_TOKEN']
 GEMINI_API_KEY = os.environ['GEMINI_API_KEY']
 MASTER_SPREADSHEET_ID = os.environ['MASTER_SPREADSHEET_ID']
-SLACK_WEBHOOK_URL = os.environ.get('SLACK_WEBHOOK_URL', '')  # 未設定時はSlack通知をスキップ
+SLACK_WEBHOOK_URL        = os.environ.get('SLACK_WEBHOOK_URL', '')
+RICHMENU_REGISTERED      = os.environ.get('RICHMENU_REGISTERED', '')
+RICHMENU_UNREGISTERED    = os.environ.get('RICHMENU_UNREGISTERED', '')
 
 configuration = Configuration(access_token=LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
@@ -35,6 +37,8 @@ handler = WebhookHandler(LINE_CHANNEL_SECRET)
 pending = {}
 # 修正モード：「修正する」を押した後にテキスト/音声を待っているユーザー
 pending_correction = set()
+# フィードバック収集中 (user_id → {'category': str})
+pending_feedback = {}
 
 TEMPLATE_SHEET_NAME = '●月●日（テンプレート）'
 LIFF_URL = 'https://liff.line.me/2009693703-ONMSHAXr'
@@ -245,6 +249,38 @@ def send_to_slack(member_name, sheet_title, structured_text):
     except Exception:
         pass  # Slack通知の失敗は日報記録に影響させない
 
+# ========== Rich Menu ==========
+
+def link_rich_menu(user_id, menu_id):
+    if not menu_id:
+        return
+    try:
+        requests.post(
+            f'https://api.line.me/v2/bot/user/{user_id}/richmenu/{menu_id}',
+            headers={'Authorization': f'Bearer {LINE_CHANNEL_ACCESS_TOKEN}'},
+            timeout=10
+        )
+    except Exception:
+        pass
+
+# ========== Feedback ==========
+
+def save_feedback(user_id, category, message, token):
+    """フィードバックをマスタースプシの「フィードバック」シートに記録"""
+    member = get_member(user_id, token)
+    name = member['name'] if member else '不明'
+    now = datetime.now().strftime('%Y/%m/%d %H:%M')
+    url = (
+        f"https://sheets.googleapis.com/v4/spreadsheets/{MASTER_SPREADSHEET_ID}"
+        f"/values/フィードバック!A:D:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS"
+    )
+    payload = {"values": [[now, name, category, message]]}
+    resp = requests.post(url, json=payload, headers={
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json"
+    })
+    resp.raise_for_status()
+
 # ========== Gemini ==========
 
 def call_gemini_audio(audio_b64):
@@ -437,7 +473,7 @@ def register():
             except Exception:
                 pass
 
-        # 登録完了メッセージ＋ガイドURLをLINEに送信
+        # 登録完了メッセージ＋ガイドURL送信＋リッチメニュー切り替え
         if line_user_id:
             try:
                 push_text(
@@ -449,6 +485,7 @@ def register():
                 )
             except Exception:
                 pass
+            link_rich_menu(line_user_id, RICHMENU_REGISTERED)
 
         return cors_response({'status': 'ok'})
 
@@ -467,6 +504,18 @@ def handle_follow(event):
 def handle_text(event):
     user_id = event.source.user_id
     text = event.message.text.strip()
+
+    # フィードバック収集モード
+    if user_id in pending_feedback:
+        category = pending_feedback.pop(user_id)['category']
+        reply_text(event.reply_token, "⏳ 送信中です...")
+        try:
+            token = get_sheets_token()
+            save_feedback(user_id, category, text, token)
+            push_text(user_id, "✅ ありがとうございます！内容を受け付けました🙏\n確認次第ご連絡します。")
+        except Exception:
+            push_text(user_id, "⚠️ 送信中にエラーが発生しました。\nしばらくしてからお試しください。")
+        return
 
     # 修正モード：「修正する」を押してテキストを送ってきた場合
     if user_id in pending_correction:
@@ -607,6 +656,37 @@ def handle_postback(event):
         pending.pop(user_id, None)
         pending_correction.discard(user_id)
         reply_text(event.reply_token, "キャンセルしました。\n記録は行われていません。")
+
+    elif data == 'start_feedback':
+        with ApiClient(configuration) as api_client:
+            MessagingApi(api_client).reply_message(
+                ReplyMessageRequest(
+                    reply_token=event.reply_token,
+                    messages=[TextMessage(
+                        text="どちらについてお送りですか？",
+                        quick_reply=QuickReply(items=[
+                            QuickReplyItem(action=PostbackAction(label='💬 フィードバック・改善要望', data='feedback_type_feedback')),
+                            QuickReplyItem(action=PostbackAction(label='📞 管理者に連絡する', data='feedback_type_contact')),
+                            QuickReplyItem(action=PostbackAction(label='⛔ キャンセル', data='feedback_cancel')),
+                        ])
+                    )]
+                )
+            )
+
+    elif data == 'feedback_type_feedback':
+        pending_feedback[user_id] = {'category': 'フィードバック・改善要望'}
+        reply_text(event.reply_token,
+            "💬 ご意見・改善要望をテキストで送ってください。\n"
+            "どんな小さなことでも歓迎です！")
+
+    elif data == 'feedback_type_contact':
+        pending_feedback[user_id] = {'category': '管理者への連絡'}
+        reply_text(event.reply_token,
+            "📞 管理者への連絡内容をテキストで送ってください。")
+
+    elif data == 'feedback_cancel':
+        pending_feedback.pop(user_id, None)
+        reply_text(event.reply_token, "キャンセルしました。")
 
     elif data == 'open_spreadsheet':
         try:
