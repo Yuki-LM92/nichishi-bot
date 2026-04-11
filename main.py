@@ -741,7 +741,7 @@ def handle_postback(event):
             else:
                 msg = "⚠️ スプレッドシートへの記録に失敗しました。\n管理者にお問い合わせください。"
         except Exception as e:
-            msg = f"⚠️ 記録中にエラーが発生しました。\nしばらくしてから再試行するか、管理者にお問い合わせください。"
+            msg = f"⚠️ 記録中にエラーが発生しました。\nエラー内容：{e}"
         reply_text(event.reply_token, msg)
         pending.pop(user_id, None)
 
