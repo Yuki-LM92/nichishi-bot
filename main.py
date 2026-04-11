@@ -108,26 +108,43 @@ def get_sheets_token():
     creds.refresh(google.auth.transport.requests.Request())
     return creds.token
 
-def get_member(user_id, token):
-    """マスタースプシからユーザー情報を取得。未登録ならNoneを返す。"""
-    # 列順: A=名前, B=email, C=LINE_ID, D=spreadsheet_id
-    url = f"https://sheets.googleapis.com/v4/spreadsheets/{MASTER_SPREADSHEET_ID}/values/メンバー!A2:D"
+def get_all_members(token):
+    """メンバーシートの全行を取得する"""
+    # 列順: A=名前, B=email, C=LINE_ID, D=spreadsheet_id, E=更新日付
+    url = f"https://sheets.googleapis.com/v4/spreadsheets/{MASTER_SPREADSHEET_ID}/values/メンバー!A2:E"
     resp = requests.get(url, headers={"Authorization": f"Bearer {token}"})
     resp.raise_for_status()
-    for row in resp.json().get('values', []):
+    return resp.json().get('values', [])
+
+def get_member(user_id, token):
+    """LINE_IDでメンバー情報を取得。未登録ならNoneを返す。"""
+    for row in get_all_members(token):
         if len(row) > 2 and row[2] == user_id:
-            name = row[0] if len(row) > 0 else ''
-            spreadsheet_id = row[3] if len(row) > 3 else ''
-            return {'name': name, 'spreadsheet_id': spreadsheet_id}
+            return {
+                'name': row[0] if len(row) > 0 else '',
+                'spreadsheet_id': row[3] if len(row) > 3 else ''
+            }
     return None
 
+def is_duplicate(user_id, name, email, token):
+    """LINE_ID・名前・メールアドレスのいずれかが一致すれば重複とみなす"""
+    for row in get_all_members(token):
+        row_line_id = row[2] if len(row) > 2 else ''
+        row_name    = row[0] if len(row) > 0 else ''
+        row_email   = row[1] if len(row) > 1 else ''
+        if (user_id and row_line_id == user_id) or \
+           (row_name == name and row_email == email):
+            return True
+    return False
+
 def append_member(user_id, name, email, token):
-    # 列順: A=名前, B=email, C=LINE_ID, D=spreadsheet_id
+    # 列順: A=名前, B=email, C=LINE_ID, D=spreadsheet_id, E=更新日付
+    now = datetime.now().strftime('%Y/%m/%d %H:%M')
     url = (
         f"https://sheets.googleapis.com/v4/spreadsheets/{MASTER_SPREADSHEET_ID}"
-        f"/values/メンバー!A:D:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS"
+        f"/values/メンバー!A:E:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS"
     )
-    payload = {"values": [[name, email, user_id, '']]}
+    payload = {"values": [[name, email, user_id, '', now]]}
     resp = requests.post(url, json=payload, headers={
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json"
@@ -450,11 +467,9 @@ def register():
 
         token = get_sheets_token()
 
-        # 二重登録チェック
-        if line_user_id:
-            existing = get_member(line_user_id, token)
-            if existing:
-                return cors_response({'status': 'already_registered'})
+        # 二重登録チェック（LINE_ID・名前・メールのいずれかが一致）
+        if is_duplicate(line_user_id, name, email, token):
+            return cors_response({'status': 'already_registered'})
 
         # マスタースプシに記録
         append_member(line_user_id, name, email, token)
