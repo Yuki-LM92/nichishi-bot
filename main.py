@@ -706,14 +706,33 @@ def handle_postback(event):
 
     elif data == 'feedback_type_feedback':
         pending_feedback[user_id] = {'category': 'フィードバック・改善要望'}
-        reply_text(event.reply_token,
-            "💬 ご意見・改善要望をテキストで送ってください。\n"
-            "どんな小さなことでも歓迎です！")
+        with ApiClient(configuration) as api_client:
+            MessagingApi(api_client).reply_message(
+                ReplyMessageRequest(
+                    reply_token=event.reply_token,
+                    messages=[TextMessage(
+                        text="💬 ご意見・改善要望をテキストで送ってください。\nどんな小さなことでも歓迎です！",
+                        quick_reply=QuickReply(items=[
+                            QuickReplyItem(action=PostbackAction(label='⛔ キャンセル', data='feedback_cancel')),
+                        ])
+                    )]
+                )
+            )
 
     elif data == 'feedback_type_contact':
         pending_feedback[user_id] = {'category': '管理者への連絡'}
-        reply_text(event.reply_token,
-            "📞 管理者への連絡内容をテキストで送ってください。")
+        with ApiClient(configuration) as api_client:
+            MessagingApi(api_client).reply_message(
+                ReplyMessageRequest(
+                    reply_token=event.reply_token,
+                    messages=[TextMessage(
+                        text="📞 管理者への連絡内容をテキストで送ってください。",
+                        quick_reply=QuickReply(items=[
+                            QuickReplyItem(action=PostbackAction(label='⛔ キャンセル', data='feedback_cancel')),
+                        ])
+                    )]
+                )
+            )
 
     elif data == 'feedback_cancel':
         pending_feedback.pop(user_id, None)
