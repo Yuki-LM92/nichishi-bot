@@ -308,6 +308,7 @@ def send_confirm(reply_token, structured_text):
                         quick_reply=QuickReply(items=[
                             QuickReplyItem(action=PostbackAction(label='✅ はい', data='confirm_yes')),
                             QuickReplyItem(action=PostbackAction(label='✏️ 修正する', data='confirm_no')),
+                            QuickReplyItem(action=PostbackAction(label='⛔ キャンセル', data='confirm_cancel')),
                         ])
                     )
                 ]
@@ -588,6 +589,11 @@ def handle_postback(event):
             "修正内容を音声またはテキストで送ってください。\n"
             "例）「3時間目の活動を農地整備に変えて」"
         )
+
+    elif data == 'confirm_cancel':
+        pending.pop(user_id, None)
+        pending_correction.discard(user_id)
+        reply_text(event.reply_token, "キャンセルしました。\n記録は行われていません。")
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 8000))
