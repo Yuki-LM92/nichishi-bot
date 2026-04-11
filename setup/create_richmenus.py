@@ -62,7 +62,7 @@ def create_unregistered_image():
     f_main = load_font(105)
     f_sub  = load_font(68)
     cx, cy = W // 2, H // 2
-    draw.text((cx, cy - 90), "📝  はじめての方はこちら", font=f_main, fill='white', anchor='mm')
+    draw.text((cx, cy - 80), "はじめての方はこちら", font=f_main, fill='white', anchor='mm')
     draw.text((cx, cy + 70), "タップして利用登録へ", font=f_sub, fill=(200, 255, 215), anchor='mm')
     return img_to_buf(img)
 
@@ -73,25 +73,25 @@ def create_registered_image():
     cell_w = W // 3
 
     cells = [
-        ('📊', 'スプレッドシート', 'を開く',         (230, 248, 236)),
-        ('📖', '使い方',          'ガイド',           (230, 243, 255)),
-        ('💬', 'フィードバック・', 'お問い合わせ',     (255, 248, 225)),
+        ('スプレッドシート', 'を開く',        (6, 199, 85),   (230, 248, 236)),
+        ('使い方',          'ガイド',          (30, 130, 220), (230, 243, 255)),
+        ('フィードバック・', 'お問い合わせ',    (220, 150, 0),  (255, 248, 225)),
     ]
 
-    f_icon = load_font(145)
-    f_main = load_font(67)
-    f_sub  = load_font(57)
+    f_main = load_font(80)
+    f_sub  = load_font(65)
 
-    for i, (icon, line1, line2, bg) in enumerate(cells):
+    for i, (line1, line2, accent, bg) in enumerate(cells):
         x0, x1 = i * cell_w, (i + 1) * cell_w
         draw.rectangle([x0, 0, x1 - 1, H], fill=bg)
+        # アクセントライン（上部）
+        draw.rectangle([x0, 0, x1 - 1, 18], fill=accent)
         if i > 0:
-            draw.line([(x0, 25), (x0, H - 25)], fill=(200, 220, 205), width=5)
+            draw.line([(x0, 18), (x0, H)], fill=(210, 225, 215), width=4)
         cx = x0 + cell_w // 2
         cy = H // 2
-        draw.text((cx, cy - 145), icon,  font=f_icon, fill='#222', anchor='mm')
-        draw.text((cx, cy + 35),  line1, font=f_main, fill='#1a1a1a', anchor='mm')
-        draw.text((cx, cy + 115), line2, font=f_sub,  fill='#555', anchor='mm')
+        draw.text((cx, cy - 45), line1, font=f_main, fill='#1a1a1a', anchor='mm')
+        draw.text((cx, cy + 60), line2, font=f_sub,  fill='#444',    anchor='mm')
 
     return img_to_buf(img)
 
@@ -110,7 +110,7 @@ def create_menu(definition):
 
 def upload_image(menu_id, buf):
     resp = requests.post(
-        f'{LINE_API}/richmenu/{menu_id}/content',
+        f'https://api-data.line.me/v2/bot/richmenu/{menu_id}/content',
         headers={**HEADERS, 'Content-Type': 'image/png'},
         data=buf.read()
     )
@@ -121,6 +121,16 @@ def set_default(menu_id):
     resp = requests.post(f'{LINE_API}/user/all/richmenu/{menu_id}', headers=HEADERS)
     resp.raise_for_status()
     print(f"  ✅ デフォルトメニューに設定")
+
+def delete_all_menus():
+    """既存のリッチメニューを全削除"""
+    resp = requests.get(f'{LINE_API}/richmenu/list', headers=HEADERS)
+    if resp.status_code != 200:
+        return
+    for menu in resp.json().get('richmenus', []):
+        mid = menu['richMenuId']
+        requests.delete(f'{LINE_API}/richmenu/{mid}', headers=HEADERS)
+        print(f"  🗑️ 削除: {mid}")
 
 # ========== メニュー定義 ==========
 
@@ -159,6 +169,9 @@ REGISTERED_DEF = {
 }
 
 # ========== 実行 ==========
+
+print("\n🗑️ 既存メニューをクリア中...")
+delete_all_menus()
 
 print("\n🔧 未登録ユーザー用メニューを作成中...")
 unregistered_id = create_menu(UNREGISTERED_DEF)

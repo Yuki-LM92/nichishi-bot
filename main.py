@@ -678,8 +678,9 @@ def handle_postback(event):
         pending_correction.add(user_id)
         reply_text(
             event.reply_token,
-            "修正内容を音声またはテキストで送ってください。\n"
-            "例）「3時間目の活動を農地整備に変えて」"
+            "修正内容をテキストで送ってください。\n"
+            "例）「マクドナルドはバーガーキングでした」\n"
+            "　　「日付を4月10日に変えて」"
         )
 
     elif data == 'confirm_cancel':
