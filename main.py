@@ -725,7 +725,7 @@ def handle_postback(event):
         reply_text(
             event.reply_token,
             "修正内容をテキストで送ってください。\n"
-            "例）「マクドナルドはバーガーキングでした」\n"
+            "例）「午後の作業時間を3時間に変えて」\n"
             "　　「日付を4月10日に変えて」"
         )
 
