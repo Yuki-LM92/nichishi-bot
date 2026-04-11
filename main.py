@@ -220,10 +220,13 @@ def create_user_spreadsheet(name, email, token):
     if not TEMPLATE_SPREADSHEET_ID:
         return None, None
 
-    # テンプレートをコピー
+    # テンプレートをコピー（Google Sheets形式に変換）
     resp = requests.post(
         f'https://www.googleapis.com/drive/v3/files/{TEMPLATE_SPREADSHEET_ID}/copy',
-        json={'name': f'{name}さんの業務日誌'},
+        json={
+            'name': f'{name}さんの業務日誌',
+            'mimeType': 'application/vnd.google-apps.spreadsheet'
+        },
         headers={'Authorization': f'Bearer {token}', 'Content-Type': 'application/json'},
         timeout=30
     )
