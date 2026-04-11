@@ -47,60 +47,54 @@ pending_cancel = set()
 TEMPLATE_SHEET_NAME = '●月●日（テンプレート）'
 LIFF_URL = 'https://liff.line.me/2009693703-ONMSHAXr'
 
-PROMPT = """
+_REPORT_FORMAT = """
+📅 日付：（言及があれば。なければ空欄）
+⏰ 活動内容：
+・[HH:MM] 活動内容
+・[HH:MM] 活動内容
+（複数ある場合はすべて列挙する）
+📣 共有事項：（上司や仲間にSlackで伝えたいことがあれば記載。なければ「なし」）
+
+時間のルール：
+- 時間は必ず [HH:MM] 形式で角括弧に入れる（例：[08:00]、[10:30]）
+- 「8時ごろ」→ [08:00]、「10時から11時」→ [10:00]、「11:15ごろ」→ [11:15]
+- 時間の言及がない活動は [--:--] とする
+- 途中で終わった記録も省略せずすべて記載する
+"""
+
+PROMPT = f"""
 あなたは地域おこし協力隊の業務日報の記録係です。
 送られてきた音声は、協力隊員が今日の業務を振り返って話したものです。
 
 以下のフォーマットだけで出力してください（余計な説明は不要）：
-
-📅 日付：（言及があれば。なければ空欄）
-⏰ 活動内容：
-・[時間帯があれば] 活動内容
-・[時間帯があれば] 活動内容
-（時間の言及がない場合はそのまま箇条書き）
-📣 共有事項：（上司や仲間にSlackで伝えたいことがあれば記載。なければ「なし」）
-
+{_REPORT_FORMAT}
 音声に含まれる情報だけを使い、推測で補わないでください。
 """
 
-TEXT_PROMPT = """
+TEXT_PROMPT = f"""
 あなたは地域おこし協力隊の業務日報の記録係です。
 以下のテキストは、協力隊員が今日の業務内容を伝えたものです。
 
 以下のフォーマットだけで出力してください（余計な説明は不要）：
-
-📅 日付：（言及があれば。なければ空欄）
-⏰ 活動内容：
-・[時間帯があれば] 活動内容
-・[時間帯があれば] 活動内容
-（時間の言及がない場合はそのまま箇条書き）
-📣 共有事項：（上司や仲間にSlackで伝えたいことがあれば記載。なければ「なし」）
-
+{_REPORT_FORMAT}
 テキストに含まれる情報だけを使い、推測で補わないでください。
 
 テキスト：
 """
 
-CORRECTION_PROMPT = """
+CORRECTION_PROMPT = f"""
 あなたは地域おこし協力隊の業務日報の記録係です。
 以下の「現在の日報」に対して「修正指示」を適用し、修正後の日報を出力してください。
 
 ルール：
 - 修正指示に含まれる変更のみを反映し、それ以外の内容はそのまま維持する
 - 以下のフォーマットだけで出力すること（余計な説明は不要）：
-
-📅 日付：（言及があれば。なければ空欄）
-⏰ 活動内容：
-・[時間帯があれば] 活動内容
-・[時間帯があれば] 活動内容
-（時間の言及がない場合はそのまま箇条書き）
-📣 共有事項：（上司や仲間にSlackで伝えたいことがあれば記載。なければ「なし」）
-
+{_REPORT_FORMAT}
 現在の日報：
-{original}
+{{original}}
 
 修正指示：
-{correction}
+{{correction}}
 """
 
 # ========== Sheets API ==========
@@ -298,15 +292,15 @@ def write_to_sheet(spreadsheet_id, sheet_title, name, structured_text, token):
             notes += '\n' + line
 
     data = [
-        {"range": f"'{sheet_title}'!C3",
+        {"range": f"'{sheet_title}'!A3",
          "values": [[f"令和{reiwa_year}年{today.month}月{today.day}日"]]},
-        {"range": f"'{sheet_title}'!C6",
+        {"range": f"'{sheet_title}'!B6",
          "values": [[name]]},
     ]
-    for i, (time_str, content) in enumerate(activities[:7]):
+    for i, (time_str, content) in enumerate(activities[:15]):
         row = 10 + i
         data.append({"range": f"'{sheet_title}'!A{row}", "values": [[time_str]]})
-        data.append({"range": f"'{sheet_title}'!C{row}", "values": [[content]]})
+        data.append({"range": f"'{sheet_title}'!B{row}", "values": [[content]]})
     if notes and notes != 'なし':
         data.append({"range": f"'{sheet_title}'!B17", "values": [[notes]]})
 
