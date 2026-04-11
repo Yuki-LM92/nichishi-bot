@@ -197,7 +197,7 @@ def create_user_spreadsheet(name, email, token):
     return file_id, spreadsheet_url
 
 def get_template_sheet_id(spreadsheet_id, token):
-    url = f"https://sheets.googleapis.com/v4/spreadsheets/{spreadsheet_id}?fields=sheets.properties"
+    url = f"https://sheets.googleapis.com/v4/spreadsheets/{spreadsheet_id}"
     resp = requests.get(url, headers={"Authorization": f"Bearer {token}"})
     resp.raise_for_status()
     for sheet in resp.json().get('sheets', []):
