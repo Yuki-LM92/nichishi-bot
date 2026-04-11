@@ -744,14 +744,29 @@ def handle_postback(event):
         try:
             sheet_name, member_name = record_to_sheet(user_id, structured)
             if sheet_name:
-                msg = f"✅ {sheet_name}の日報をスプレッドシートに記録しました！"
+                reply_text(event.reply_token, f"✅ {sheet_name}の日報をスプレッドシートに記録しました！")
                 send_to_slack(member_name, sheet_name, structured)
+                pending.pop(user_id, None)
             else:
-                msg = "⚠️ スプレッドシートへの記録に失敗しました。\n管理者にお問い合わせください。"
+                # スプシ未設定などで記録できなかった場合もリトライ不要なので削除
+                reply_text(event.reply_token, "⚠️ スプレッドシートへの記録に失敗しました。\n管理者にお問い合わせください。")
+                pending.pop(user_id, None)
         except Exception as e:
-            msg = f"⚠️ エラー：{e}"
-        reply_text(event.reply_token, msg)
-        pending.pop(user_id, None)
+            # エラー時はpendingを保持してリトライを促す
+            reply_text(event.reply_token, f"⚠️ エラー：{e}")
+            with ApiClient(configuration) as api_client:
+                MessagingApi(api_client).push_message(
+                    push_message_request=PushMessageRequest(
+                        to=user_id,
+                        messages=[TextMessage(
+                            text=f"🔄 もう一度試しますか？\n\n{structured}",
+                            quick_reply=QuickReply(items=[
+                                QuickReplyItem(action=PostbackAction(label='✅ リトライ', data='confirm_yes')),
+                                QuickReplyItem(action=PostbackAction(label='⛔ キャンセル', data='confirm_cancel')),
+                            ])
+                        )]
+                    )
+                )
 
     elif data == 'confirm_no':
         pending_correction.add(user_id)
