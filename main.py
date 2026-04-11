@@ -513,7 +513,22 @@ def register():
 
 @handler.add(FollowEvent)
 def handle_follow(event):
-    reply_text(event.reply_token, WELCOME_MESSAGE)
+    user_id = event.source.user_id
+    try:
+        token = get_sheets_token()
+        member = get_member(user_id, token)
+    except Exception:
+        member = None
+
+    if member:
+        # 登録済みユーザーが再フォロー → 登録済みメニューを再リンク
+        link_rich_menu(user_id, RICHMENU_REGISTERED)
+        reply_text(event.reply_token,
+            f"おかえりなさい、{member['name']}さん！👋\n"
+            "引き続きご利用ください🎤"
+        )
+    else:
+        reply_text(event.reply_token, WELCOME_MESSAGE)
 
 @handler.add(MessageEvent, message=TextMessageContent)
 def handle_text(event):
