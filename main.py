@@ -622,6 +622,7 @@ def handle_text(event):
                                 quick_reply=QuickReply(items=[
                                     QuickReplyItem(action=PostbackAction(label='✅ はい', data='confirm_yes')),
                                     QuickReplyItem(action=PostbackAction(label='✏️ 修正する', data='confirm_no')),
+                                    QuickReplyItem(action=PostbackAction(label='⛔ キャンセル', data='confirm_cancel')),
                                 ])
                             )
                         ]
@@ -712,6 +713,7 @@ def handle_audio(event):
                             quick_reply=QuickReply(items=[
                                 QuickReplyItem(action=PostbackAction(label='✅ はい', data='confirm_yes')),
                                 QuickReplyItem(action=PostbackAction(label='✏️ 修正する', data='confirm_no')),
+                                QuickReplyItem(action=PostbackAction(label='⛔ キャンセル', data='confirm_cancel')),
                             ])
                         )
                     ]
