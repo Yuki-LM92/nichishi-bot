@@ -624,6 +624,9 @@ def register():
 
         # 二重登録チェック（LINE_ID・名前・メールのいずれかが一致）
         if is_duplicate(line_user_id, name, email, token):
+            # 登録済みでもリッチメニューを再リンク（リセット対策）
+            if line_user_id:
+                link_rich_menu(line_user_id, RICHMENU_REGISTERED)
             return cors_response({'status': 'already_registered'})
 
         # スプレッドシートを自動生成
@@ -790,6 +793,8 @@ def handle_text(event):
         reply_text(event.reply_token, WAITING_SHEET_MESSAGE)
         return
 
+    # 登録済みユーザーのメニューをサイレントに復元
+    link_rich_menu(user_id, RICHMENU_REGISTERED)
     reply_text(event.reply_token, AUDIO_GUIDE_MESSAGE)
 
 @handler.add(MessageEvent, message=ImageMessageContent)
@@ -855,6 +860,8 @@ def handle_audio(event):
         reply_text(event.reply_token, WAITING_SHEET_MESSAGE)
         return
 
+    # 登録済みユーザーのメニューをサイレントに復元
+    link_rich_menu(user_id, RICHMENU_REGISTERED)
     # 修正モードを解除（音声で修正する場合も通常処理へ）
     pending_correction.discard(user_id)
 
