@@ -15,7 +15,7 @@ from linebot.v3.messaging import (
 )
 from linebot.v3.webhooks import (
     MessageEvent, AudioMessageContent, PostbackEvent,
-    TextMessageContent, FollowEvent
+    TextMessageContent, FollowEvent, ImageMessageContent
 )
 import google.auth
 import google.auth.transport.requests
@@ -43,6 +43,8 @@ pending_correction = set()
 pending_feedback = {}
 # 処理中にキャンセルを要求したユーザー
 pending_cancel = set()
+# 写真アップロード待ち (user_id → {'file_id': str, 'month': int, 'day': int})
+pending_image = {}
 
 TEMPLATE_SHEET_NAME = '●月●日（テンプレート）'
 LIFF_URL = 'https://liff.line.me/2009693703-ONMSHAXr'
@@ -318,6 +320,40 @@ def write_to_sheet(spreadsheet_id, sheet_title, name, structured_text, month, da
     resp = requests.post(url, json={"valueInputOption": "USER_ENTERED", "data": data},
                          headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"})
     resp.raise_for_status()
+
+PHOTO_CELL = 'F2'  # 活動写真エリアの左上セル
+
+def upload_photo_to_drive(image_bytes, filename, token):
+    """画像をGoogle Driveにアップロードし、公開してfile_idを返す"""
+    import json as _json
+    metadata = _json.dumps({'name': filename, 'mimeType': 'image/jpeg'}).encode()
+    boundary = b'nishishi_boundary_2025'
+    body = (
+        b'--' + boundary + b'\r\n'
+        b'Content-Type: application/json; charset=UTF-8\r\n\r\n' +
+        metadata + b'\r\n'
+        b'--' + boundary + b'\r\n'
+        b'Content-Type: image/jpeg\r\n\r\n' +
+        image_bytes + b'\r\n'
+        b'--' + boundary + b'--'
+    )
+    resp = requests.post(
+        'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart',
+        data=body,
+        headers={
+            'Authorization': f'Bearer {token}',
+            'Content-Type': f'multipart/related; boundary={boundary.decode()}',
+        }
+    )
+    resp.raise_for_status()
+    file_id = resp.json()['id']
+    # 誰でも閲覧可能に（IMAGE()関数で表示するため）
+    requests.post(
+        f'https://www.googleapis.com/drive/v3/files/{file_id}/permissions',
+        json={'type': 'anyone', 'role': 'reader'},
+        headers={'Authorization': f'Bearer {token}', 'Content-Type': 'application/json'}
+    )
+    return file_id
 
 def extract_date(structured_text):
     """構造化テキストの📅行から (month, day) を抽出。なければ今日の日付を返す。"""
@@ -731,6 +767,45 @@ def handle_text(event):
 
     reply_text(event.reply_token, AUDIO_GUIDE_MESSAGE)
 
+@handler.add(MessageEvent, message=ImageMessageContent)
+def handle_image(event):
+    user_id = event.source.user_id
+
+    token = get_sheets_token()
+    member = get_member(user_id, token)
+    if not member or not member.get('spreadsheet_id'):
+        reply_text(event.reply_token, NOT_REGISTERED_MESSAGE)
+        return
+
+    reply_text(event.reply_token, "📸 写真を受け取りました！\nアップロード中です...")
+
+    try:
+        with ApiClient(configuration) as api_client:
+            image_bytes = MessagingApiBlob(api_client).get_message_content(event.message.id)
+
+        now = datetime.now()
+        filename = f"activity_{user_id}_{now.strftime('%Y%m%d_%H%M%S')}.jpg"
+        file_id = upload_photo_to_drive(image_bytes, filename, token)
+
+        month, day = now.month, now.day
+        pending_image[user_id] = {'file_id': file_id, 'month': month, 'day': day}
+
+        with ApiClient(configuration) as api_client:
+            MessagingApi(api_client).push_message(
+                push_message_request=PushMessageRequest(
+                    to=user_id,
+                    messages=[TextMessage(
+                        text=f"📸 アップロード完了！\n{month}月{day}日の日報の活動写真欄に追加しますか？",
+                        quick_reply=QuickReply(items=[
+                            QuickReplyItem(action=PostbackAction(label='✅ 追加する', data='add_photo')),
+                            QuickReplyItem(action=PostbackAction(label='⛔ キャンセル', data='cancel_photo')),
+                        ])
+                    )]
+                )
+            )
+    except Exception as e:
+        push_text(user_id, f"⚠️ 写真のアップロードに失敗しました：{e}")
+
 @handler.add(MessageEvent, message=AudioMessageContent)
 def handle_audio(event):
     user_id = event.source.user_id
@@ -909,6 +984,37 @@ def handle_postback(event):
 
     elif data == 'feedback_cancel':
         pending_feedback.pop(user_id, None)
+        reply_text(event.reply_token, "キャンセルしました。")
+
+    elif data == 'add_photo':
+        info = pending_image.pop(user_id, None)
+        if not info:
+            reply_text(event.reply_token, "⚠️ 写真データが見つかりません。もう一度送ってください。")
+            return
+        try:
+            token = get_sheets_token()
+            member = get_member(user_id, token)
+            if not member or not member.get('spreadsheet_id'):
+                reply_text(event.reply_token, "⚠️ メンバー情報が見つかりません。")
+                return
+            spreadsheet_id = member['spreadsheet_id']
+            month, day = info['month'], info['day']
+            sheet_title = f"{month}月{day}日"
+            image_url = f"https://drive.google.com/uc?export=view&id={info['file_id']}"
+            url = f"https://sheets.googleapis.com/v4/spreadsheets/{spreadsheet_id}/values:batchUpdate"
+            resp = requests.post(url, json={
+                "valueInputOption": "USER_ENTERED",
+                "data": [{"range": f"'{sheet_title}'!{PHOTO_CELL}", "values": [[f'=IMAGE("{image_url}")']]}]
+            }, headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"})
+            if resp.ok:
+                reply_text(event.reply_token, f"✅ {sheet_title}の活動写真を追加しました！")
+            else:
+                reply_text(event.reply_token, f"⚠️ 写真の追加に失敗しました：{resp.text[:150]}")
+        except Exception as e:
+            reply_text(event.reply_token, f"⚠️ エラー：{e}")
+
+    elif data == 'cancel_photo':
+        pending_image.pop(user_id, None)
         reply_text(event.reply_token, "キャンセルしました。")
 
     elif data == 'open_spreadsheet':
