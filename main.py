@@ -297,12 +297,22 @@ def write_to_sheet(spreadsheet_id, sheet_title, name, structured_text, month, da
         {"range": f"'{sheet_title}'!B6",
          "values": [[name]]},
     ]
-    for i, (time_str, content) in enumerate(activities[:15]):
+    # 活動行は10〜16の7行のみ。超過分は特記事項に追記
+    for i, (time_str, content) in enumerate(activities[:7]):
         row = 10 + i
         data.append({"range": f"'{sheet_title}'!A{row}", "values": [[time_str]]})
         data.append({"range": f"'{sheet_title}'!B{row}", "values": [[content]]})
+    overflow = activities[7:]
+    notes_parts = []
     if notes and notes != 'なし':
-        data.append({"range": f"'{sheet_title}'!B17", "values": [[notes]]})
+        notes_parts.append(notes)
+    if overflow:
+        overflow_lines = '\n'.join(
+            f"{t} {c}".strip() for t, c in overflow
+        )
+        notes_parts.append(f"【続き】\n{overflow_lines}")
+    if notes_parts:
+        data.append({"range": f"'{sheet_title}'!B17", "values": [['\n'.join(notes_parts)]]})
 
     url = f"https://sheets.googleapis.com/v4/spreadsheets/{spreadsheet_id}/values:batchUpdate"
     resp = requests.post(url, json={"valueInputOption": "USER_ENTERED", "data": data},
