@@ -30,7 +30,8 @@ HEADERS     = {'Authorization': f'Bearer {TOKEN}'}
 LINE_API    = 'https://api.line.me/v2/bot'
 LIFF_URL    = 'https://liff.line.me/2009693703-ONMSHAXr'
 GUIDE_URL   = 'https://yuki-lm92.github.io/nichishi-register/guide.html'
-W, H        = 2500, 843  # compact size (1 row)
+W, H        = 2500, 843   # compact size (1 row)
+W2, H2      = 2500, 1686  # large size (2 rows)
 
 # ========== 画像生成 ==========
 
@@ -67,31 +68,66 @@ def create_unregistered_image():
     return img_to_buf(img)
 
 def create_registered_image():
-    """登録済み: 3分割（スプシ・ガイド・フィードバック）"""
-    img = Image.new('RGB', (W, H), (248, 253, 248))
+    """登録済み: 2段構成（上段2ボタン・下段3ボタン）"""
+    img = Image.new('RGB', (W2, H2), (248, 253, 248))
     draw = ImageDraw.Draw(img)
-    cell_w = W // 3
 
-    cells = [
-        ('スプレッドシート', 'を開く',        (6, 199, 85),   (230, 248, 236)),
-        ('使い方',          'ガイド',          (30, 130, 220), (230, 243, 255)),
-        ('フィードバック・', 'お問い合わせ',    (220, 150, 0),  (255, 248, 225)),
+    f_num  = load_font(130)
+    f_main = load_font(90)
+    f_sub  = load_font(60)
+    f_step = load_font(52)
+
+    # ---- 上段：2分割 ----
+    top_cells = [
+        {
+            'num': '1', 'title': '音声で日誌入力',
+            'steps': ['マイクを長押し', '話す（15秒〜2分）', '指を離して送信', '「はい」で記録完了'],
+            'accent': (6, 199, 85), 'bg': (230, 248, 236),
+        },
+        {
+            'num': '2', 'title': '写真を登録',
+            'steps': ['このボタンをタップ', '日付を入力', '写真を送信', '「追加する」で完了'],
+            'accent': (30, 130, 220), 'bg': (230, 243, 255),
+        },
     ]
-
-    f_main = load_font(80)
-    f_sub  = load_font(65)
-
-    for i, (line1, line2, accent, bg) in enumerate(cells):
-        x0, x1 = i * cell_w, (i + 1) * cell_w
-        draw.rectangle([x0, 0, x1 - 1, H], fill=bg)
-        # アクセントライン（上部）
-        draw.rectangle([x0, 0, x1 - 1, 18], fill=accent)
+    cell_w_top = W2 // 2
+    for i, cell in enumerate(top_cells):
+        x0, x1 = i * cell_w_top, (i + 1) * cell_w_top
+        draw.rectangle([x0, 0, x1 - 1, H], fill=cell['bg'])
+        draw.rectangle([x0, 0, x1 - 1, 22], fill=cell['accent'])
         if i > 0:
-            draw.line([(x0, 18), (x0, H)], fill=(210, 225, 215), width=4)
-        cx = x0 + cell_w // 2
-        cy = H // 2
+            draw.line([(x0, 22), (x0, H)], fill=(200, 220, 210), width=4)
+        cx = x0 + cell_w_top // 2
+        # 数字バッジ
+        draw.text((cx - 260, 120), cell['num'], font=f_num, fill=cell['accent'], anchor='mm')
+        draw.text((cx + 60, 120), cell['title'], font=f_main, fill='#1a1a1a', anchor='lm')
+        # ステップ
+        step_y = 260
+        for j, step in enumerate(cell['steps']):
+            draw.text((x0 + 60, step_y), f'Step{j+1}  {step}', font=f_step, fill='#555')
+            step_y += 120
+
+    # ---- 区切り線 ----
+    draw.line([(0, H), (W2, H)], fill=(200, 215, 205), width=6)
+
+    # ---- 下段：3分割 ----
+    bottom_cells = [
+        ('スプレッドシート', 'を開く',      (6, 199, 85),   (230, 248, 236)),
+        ('使い方',          'ガイド',        (30, 130, 220), (230, 243, 255)),
+        ('フィードバック・', 'お問い合わせ', (220, 150, 0),  (255, 248, 225)),
+    ]
+    cell_w_bot = W2 // 3
+    for i, (line1, line2, accent, bg) in enumerate(bottom_cells):
+        x0, x1 = i * cell_w_bot, (i + 1) * cell_w_bot
+        y0 = H
+        draw.rectangle([x0, y0, x1 - 1, H2], fill=bg)
+        draw.rectangle([x0, y0, x1 - 1, y0 + 18], fill=accent)
+        if i > 0:
+            draw.line([(x0, y0 + 18), (x0, H2)], fill=(210, 225, 215), width=4)
+        cx = x0 + cell_w_bot // 2
+        cy = y0 + H // 2
         draw.text((cx, cy - 45), line1, font=f_main, fill='#1a1a1a', anchor='mm')
-        draw.text((cx, cy + 60), line2, font=f_sub,  fill='#444',    anchor='mm')
+        draw.text((cx, cy + 65), line2, font=f_sub,  fill='#444',    anchor='mm')
 
     return img_to_buf(img)
 
@@ -148,21 +184,29 @@ UNREGISTERED_DEF = {
 }
 
 REGISTERED_DEF = {
-    "size": {"width": 2500, "height": 843},
+    "size": {"width": 2500, "height": 1686},
     "selected": True,
     "name": "登録済みユーザーメニュー",
     "chatBarText": "メニュー",
     "areas": [
         {
-            "bounds": {"x": 0, "y": 0, "width": 833, "height": 843},
+            "bounds": {"x": 0, "y": 0, "width": 1250, "height": 843},
+            "action": {"type": "postback", "label": "音声で日誌入力", "data": "guide_voice"}
+        },
+        {
+            "bounds": {"x": 1250, "y": 0, "width": 1250, "height": 843},
+            "action": {"type": "postback", "label": "写真を登録", "data": "guide_photo"}
+        },
+        {
+            "bounds": {"x": 0, "y": 843, "width": 833, "height": 843},
             "action": {"type": "postback", "label": "スプレッドシートを開く", "data": "open_spreadsheet"}
         },
         {
-            "bounds": {"x": 833, "y": 0, "width": 834, "height": 843},
+            "bounds": {"x": 833, "y": 843, "width": 834, "height": 843},
             "action": {"type": "uri", "label": "使い方ガイド", "uri": GUIDE_URL}
         },
         {
-            "bounds": {"x": 1667, "y": 0, "width": 833, "height": 843},
+            "bounds": {"x": 1667, "y": 843, "width": 833, "height": 843},
             "action": {"type": "postback", "label": "フィードバック", "data": "start_feedback"}
         }
     ]

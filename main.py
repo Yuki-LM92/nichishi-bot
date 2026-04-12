@@ -4,7 +4,7 @@ import json
 import base64
 import tempfile
 import requests
-from datetime import datetime
+from datetime import datetime, timedelta
 from flask import Flask, request, abort
 from linebot.v3 import WebhookHandler
 from linebot.v3.exceptions import InvalidSignatureError
@@ -45,6 +45,10 @@ pending_feedback = {}
 pending_cancel = set()
 # 写真アップロード待ち (user_id → {'file_id': str, 'month': int, 'day': int})
 pending_image = {}
+# 写真登録フロー：日付入力待ち
+pending_photo_date = set()
+# 写真登録フロー：日付確定・写真送信待ち (user_id → {'month': int, 'day': int})
+pending_photo_ready = {}
 
 TEMPLATE_SHEET_NAME = '●月●日（テンプレート）'
 LIFF_URL = 'https://liff.line.me/2009693703-ONMSHAXr'
@@ -710,6 +714,27 @@ def handle_text(event):
         reply_text(event.reply_token, "⛔ キャンセルしました。\n処理中の場合も完了後に破棄します。")
         return
 
+    # 写真登録：日付入力待ち
+    if user_id in pending_photo_date:
+        today = datetime.now()
+        if text in ['今日', 'きょう']:
+            month, day = today.month, today.day
+        elif text in ['昨日', 'きのう']:
+            yday = today - timedelta(days=1)
+            month, day = yday.month, yday.day
+        else:
+            m = re.search(r'(\d{1,2})[/月](\d{1,2})', text)
+            if not m:
+                reply_text(event.reply_token,
+                    "日付を入力してください。\n例：4/10、4月10日、今日、昨日")
+                return
+            month, day = int(m.group(1)), int(m.group(2))
+        pending_photo_date.discard(user_id)
+        pending_photo_ready[user_id] = {'month': month, 'day': day}
+        reply_text(event.reply_token,
+            f"✅ {month}月{day}日ですね！\nでは登録する写真を送ってください📸")
+        return
+
     # フィードバック収集モード
     if user_id in pending_feedback:
         category = pending_feedback.pop(user_id)['category']
@@ -777,7 +802,16 @@ def handle_image(event):
         reply_text(event.reply_token, NOT_REGISTERED_MESSAGE)
         return
 
-    reply_text(event.reply_token, "📸 写真を受け取りました！\nアップロード中です...")
+    # 写真フロー外で送られてきた場合は案内する
+    if user_id not in pending_photo_ready:
+        reply_text(event.reply_token,
+            "📸 写真を登録するには、メニューの「②写真を登録」をタップして日付を入力してから写真を送ってください。")
+        return
+
+    date_info = pending_photo_ready.pop(user_id)
+    month, day = date_info['month'], date_info['day']
+
+    reply_text(event.reply_token, "📸 写真を受け取りました！アップロード中です...")
 
     try:
         with ApiClient(configuration) as api_client:
@@ -787,7 +821,6 @@ def handle_image(event):
         filename = f"activity_{user_id}_{now.strftime('%Y%m%d_%H%M%S')}.jpg"
         file_id = upload_photo_to_drive(image_bytes, filename, token)
 
-        month, day = now.month, now.day
         pending_image[user_id] = {'file_id': file_id, 'month': month, 'day': day}
 
         with ApiClient(configuration) as api_client:
@@ -795,7 +828,7 @@ def handle_image(event):
                 push_message_request=PushMessageRequest(
                     to=user_id,
                     messages=[TextMessage(
-                        text=f"📸 アップロード完了！\n{month}月{day}日の日報の活動写真欄に追加しますか？",
+                        text=f"📸 アップロード完了！\n{month}月{day}日の活動写真として追加しますか？",
                         quick_reply=QuickReply(items=[
                             QuickReplyItem(action=PostbackAction(label='✅ 追加する', data='add_photo')),
                             QuickReplyItem(action=PostbackAction(label='⛔ キャンセル', data='cancel_photo')),
@@ -935,6 +968,32 @@ def handle_postback(event):
             pending.pop(user_id, None)
         pending_correction.discard(user_id)
         reply_text(event.reply_token, "キャンセルしました。\n記録は行われていません。")
+
+    elif data == 'guide_voice':
+        reply_text(event.reply_token,
+            "🎙️ 音声で日誌を入力する手順\n"
+            "━━━━━━━━━━━\n"
+            "① マイクボタンを長押し\n"
+            "② 今日の業務内容を話す\n"
+            "　 （目安：15秒〜2分）\n"
+            "③ 指を離して送信\n"
+            "④ 内容を確認して「✅ はい」\n"
+            "━━━━━━━━━━━\n"
+            "では、マイクボタンを長押しして\n話してみてください！"
+        )
+
+    elif data == 'guide_photo':
+        pending_photo_date.add(user_id)
+        reply_text(event.reply_token,
+            "📸 写真を登録する手順\n"
+            "━━━━━━━━━━━\n"
+            "① 日付を入力（今から）\n"
+            "② 写真を送信\n"
+            "③「✅ 追加する」をタップ\n"
+            "━━━━━━━━━━━\n"
+            "何日の日報に追加しますか？\n"
+            "例：4/10　4月10日　今日　昨日"
+        )
 
     elif data == 'start_feedback':
         with ApiClient(configuration) as api_client:
