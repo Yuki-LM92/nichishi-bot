@@ -72,23 +72,13 @@ def create_registered_image():
     img = Image.new('RGB', (W2, H2), (248, 253, 248))
     draw = ImageDraw.Draw(img)
 
-    f_num  = load_font(130)
-    f_main = load_font(90)
-    f_sub  = load_font(60)
-    f_step = load_font(52)
+    f_num  = load_font(160)
+    f_main = load_font(100)
 
     # ---- 上段：2分割 ----
     top_cells = [
-        {
-            'num': '1', 'title': '音声で日誌入力',
-            'steps': ['マイクを長押し', '話す（15秒〜2分）', '指を離して送信', '「はい」で記録完了'],
-            'accent': (6, 199, 85), 'bg': (230, 248, 236),
-        },
-        {
-            'num': '2', 'title': '写真を登録',
-            'steps': ['このボタンをタップ', '日付を入力', '写真を送信', '「追加する」で完了'],
-            'accent': (30, 130, 220), 'bg': (230, 243, 255),
-        },
+        {'num': '1', 'title': '音声で日誌入力', 'accent': (6, 199, 85),   'bg': (230, 248, 236)},
+        {'num': '2', 'title': '写真を登録',     'accent': (30, 130, 220), 'bg': (230, 243, 255)},
     ]
     cell_w_top = W2 // 2
     for i, cell in enumerate(top_cells):
@@ -98,14 +88,10 @@ def create_registered_image():
         if i > 0:
             draw.line([(x0, 22), (x0, H)], fill=(200, 220, 210), width=4)
         cx = x0 + cell_w_top // 2
-        # 数字バッジ
-        draw.text((cx - 260, 120), cell['num'], font=f_num, fill=cell['accent'], anchor='mm')
-        draw.text((cx + 60, 120), cell['title'], font=f_main, fill='#1a1a1a', anchor='lm')
-        # ステップ
-        step_y = 260
-        for j, step in enumerate(cell['steps']):
-            draw.text((x0 + 60, step_y), f'Step{j+1}  {step}', font=f_step, fill='#555')
-            step_y += 120
+        cy = H // 2
+        # 数字を左寄り・タイトルを右寄り
+        draw.text((cx - 220, cy), cell['num'], font=f_num, fill=cell['accent'], anchor='mm')
+        draw.text((cx + 100, cy), cell['title'], font=f_main, fill='#1a1a1a', anchor='mm')
 
     # ---- 区切り線 ----
     draw.line([(0, H), (W2, H)], fill=(200, 215, 205), width=6)
