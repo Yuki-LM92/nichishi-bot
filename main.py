@@ -267,9 +267,9 @@ def copy_template(spreadsheet_id, template_id, new_title, token):
         return  # 今日のシートはすでにある
     resp.raise_for_status()
 
-def write_to_sheet(spreadsheet_id, sheet_title, name, structured_text, token):
-    today = datetime.now()
-    reiwa_year = today.year - 2018
+def write_to_sheet(spreadsheet_id, sheet_title, name, structured_text, month, day, token):
+    year = datetime.now().year
+    reiwa_year = year - 2018
 
     activities = []
     notes = 'なし'
@@ -293,7 +293,7 @@ def write_to_sheet(spreadsheet_id, sheet_title, name, structured_text, token):
 
     data = [
         {"range": f"'{sheet_title}'!A3",
-         "values": [[f"令和{reiwa_year}年{today.month}月{today.day}日"]]},
+         "values": [[f"令和{reiwa_year}年{month}月{day}日"]]},
         {"range": f"'{sheet_title}'!B6",
          "values": [[name]]},
     ]
@@ -309,6 +309,19 @@ def write_to_sheet(spreadsheet_id, sheet_title, name, structured_text, token):
                          headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"})
     resp.raise_for_status()
 
+def extract_date(structured_text):
+    """構造化テキストの📅行から (month, day) を抽出。なければ今日の日付を返す。"""
+    for line in structured_text.split('\n'):
+        line = line.strip()
+        if line.startswith('📅'):
+            date_str = line.replace('📅 日付：', '').strip()
+            # 例: "4/10", "4月10日", "04/10" などを抽出
+            m = re.search(r'(\d{1,2})[/月](\d{1,2})', date_str)
+            if m:
+                return int(m.group(1)), int(m.group(2))
+    today = datetime.now()
+    return today.month, today.day
+
 def record_to_sheet(user_id, structured_text):
     """記録成功時は (sheet_title, member_name) を返す。失敗時は (None, None) を返す。"""
     token = get_sheets_token()
@@ -317,14 +330,14 @@ def record_to_sheet(user_id, structured_text):
         return None, None
     spreadsheet_id = member['spreadsheet_id']
     name = member['name']
-    today = datetime.now()
-    sheet_title = f"{today.month}月{today.day}日"
+    month, day = extract_date(structured_text)
+    sheet_title = f"{month}月{day}日"
 
     template_id = get_template_sheet_id(spreadsheet_id, token)
     if template_id is None:
         return None, None
     copy_template(spreadsheet_id, template_id, sheet_title, token)
-    write_to_sheet(spreadsheet_id, sheet_title, name, structured_text, token)
+    write_to_sheet(spreadsheet_id, sheet_title, name, structured_text, month, day, token)
     return sheet_title, name
 
 # ========== Slack ==========
@@ -893,9 +906,10 @@ def handle_postback(event):
             token = get_sheets_token()
             member = get_member(user_id, token)
             if member and member.get('spreadsheet_id'):
+                url = f"https://docs.google.com/spreadsheets/d/{member['spreadsheet_id']}/edit"
                 reply_text(
                     event.reply_token,
-                    f"📊 スプレッドシートはこちらです：\n{member['spreadsheet_id']}"
+                    f"📊 スプレッドシートはこちらです：\n{url}"
                 )
             else:
                 reply_text(
