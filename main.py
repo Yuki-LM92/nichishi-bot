@@ -4,6 +4,7 @@ import json
 import base64
 import time
 import threading
+import logging
 import requests
 from datetime import datetime, timedelta
 from flask import Flask, request, abort
@@ -32,6 +33,9 @@ RICHMENU_REGISTERED         = os.environ.get('RICHMENU_REGISTERED', '')
 RICHMENU_UNREGISTERED       = os.environ.get('RICHMENU_UNREGISTERED', '')
 TEMPLATE_SPREADSHEET_ID     = os.environ.get('TEMPLATE_SPREADSHEET_ID', '')
 ADMIN_EMAIL                 = os.environ.get('ADMIN_EMAIL', '')
+
+logging.basicConfig(level=logging.INFO, format='%(levelname)s %(name)s %(message)s')
+logger = logging.getLogger(__name__)
 
 configuration = Configuration(access_token=LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
@@ -588,6 +592,30 @@ def _process_audio_async(user_id: str, audio_b64: str) -> None:
 
     _send_confirm_push(user_id, structured)
 
+def _process_text_async(user_id: str, text: str) -> None:
+    """テキスト入力からの日報作成をバックグラウンドで実行する（スレッド用）。"""
+    try:
+        structured = call_gemini_text(text)
+    except requests.exceptions.Timeout:
+        push_text(user_id, "⏱️ AIの処理に時間がかかっています。\nしばらくしてからもう一度送ってください。")
+        return
+    except Exception:
+        push_text(user_id, "⚠️ テキストの解析に失敗しました。\nもう一度送ってください。")
+        return
+
+    if user_id in pending_cancel:
+        pending_cancel.discard(user_id)
+        push_text(user_id, "⛔ キャンセル済みのため、記録しませんでした。")
+        return
+
+    try:
+        token = get_sheets_token()
+        pending_set(user_id, structured, token)
+    except Exception:
+        pending[user_id] = structured
+
+    _send_confirm_push(user_id, structured)
+
 def _process_correction_async(user_id: str, original: str, correction_text: str) -> None:
     """修正処理をバックグラウンドで実行する（スレッド用）。"""
     try:
@@ -662,11 +690,6 @@ WAITING_SHEET_MESSAGE = (
     "もうしばらくお待ちください🙏"
 )
 
-AUDIO_GUIDE_MESSAGE = (
-    "🎙️ 音声メッセージを送ると日報を記録できます。\n"
-    "マイクボタンをタップして録音開始、\n"
-    "もう一度タップで送信します🎤"
-)
 
 # ========== Validation ==========
 
@@ -684,7 +707,7 @@ def setup():
             token = get_sheets_token()
             ensure_session_sheet(token)
         except Exception as e:
-            print(f"[setup error] {e}")
+            logger.error("[setup error] %s", e)
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
@@ -771,8 +794,7 @@ def register():
         return cors_response({'status': 'ok'})
 
     except Exception:
-        import traceback
-        print(f"[register error] {traceback.format_exc()}")
+        logger.exception("[register error]")
         return cors_response({'error': 'internal server error'}, 500)
 
 # ========== LINE event handlers ==========
@@ -872,7 +894,12 @@ def handle_text(event):
         return
 
     link_rich_menu(user_id, RICHMENU_REGISTERED)
-    reply_text(event.reply_token, AUDIO_GUIDE_MESSAGE)
+    reply_text(event.reply_token, "📝 テキストを受け取りました！\nAIが内容を整理しています...\n（10〜30秒ほどかかります）")
+    threading.Thread(
+        target=_process_text_async,
+        args=(user_id, text),
+        daemon=True
+    ).start()
 
 @handler.add(MessageEvent, message=ImageMessageContent)
 def handle_image(event):
@@ -982,7 +1009,7 @@ def handle_postback(event):
                 reply_text(event.reply_token, "⚠️ スプレッドシートへの記録に失敗しました。\n管理者にお問い合わせください。")
                 pending_del(user_id, token)
         except Exception as e:
-            print(f"[confirm_yes error] {e}")
+            logger.error("[confirm_yes error] %s", e)
             with ApiClient(configuration) as api_client:
                 MessagingApi(api_client).reply_message(
                     ReplyMessageRequest(
@@ -1148,7 +1175,7 @@ def handle_postback(event):
             else:
                 reply_text(event.reply_token, "⚠️ 写真の追加に失敗しました。\nしばらくしてからお試しください。")
         except Exception as e:
-            print(f"[add_photo error] {e}")
+            logger.error("[add_photo error] %s", e)
             reply_text(event.reply_token, "⚠️ 写真の追加中にエラーが発生しました。")
 
     elif data == 'cancel_photo':
