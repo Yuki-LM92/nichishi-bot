@@ -505,6 +505,20 @@ def save_feedback(user_id: str, category: str, message: str, token: str) -> None
     resp = requests.post(url, json=payload, headers=_json_headers(token), timeout=15)
     resp.raise_for_status()
 
+    if SLACK_WEBHOOK_URL:
+        try:
+            requests.post(SLACK_WEBHOOK_URL, json={
+                "text": (
+                    f"📩 *フィードバックが届きました*\n\n"
+                    f"送信者：{name}\n"
+                    f"カテゴリ：{category}\n"
+                    f"内容：{message}\n\n"
+                    f"日時：{now}"
+                )
+            }, timeout=10)
+        except Exception:
+            pass
+
 # ========== Chitchat QA ==========
 
 def _is_emoji_only(text: str) -> bool:
@@ -863,14 +877,14 @@ def push_text(user_id: str, text: str) -> None:
 # ========== Messages ==========
 
 WELCOME_MESSAGE = """\
-🎙️ 音声日報サービスへようこそ！
+📓 業務日誌サービスへようこそ！
 
 このアカウントでできること：
 
-🎤 音声を送るだけで日報が完成
+🎤 音声を送るだけで日誌が完成
+📝 テキストでの入力にも対応
 📋 AIが話した内容を自動で整理
 📊 スプレッドシートに自動書き込み
-💬 チームへの共有も同時に実施
 
 手入力は一切不要です。
 帰り道や移動中に今日の業務を
