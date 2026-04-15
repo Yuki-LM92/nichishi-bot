@@ -54,6 +54,7 @@ _setup_done: bool = False
 
 TEMPLATE_SHEET_NAME = '●月●日（テンプレート）'
 LIFF_URL            = 'https://liff.line.me/2009693703-ONMSHAXr'
+GUIDE_URL           = 'https://yuki-lm92.github.io/nichishi-register/guide.html'
 PENDING_SHEET       = 'pending_states'
 SESSION_SHEET       = 'session_states'
 SESSION_TTL         = 30 * 60  # 30分
@@ -504,6 +505,210 @@ def save_feedback(user_id: str, category: str, message: str, token: str) -> None
     resp = requests.post(url, json=payload, headers=_json_headers(token), timeout=15)
     resp.raise_for_status()
 
+# ========== Chitchat QA ==========
+
+def _is_emoji_only(text: str) -> bool:
+    """日本語・英数字を含まない（絵文字・記号のみ）場合 True を返す。"""
+    return not re.search(r'[ぁ-んァ-ン一-龯\u4E00-\u9FFFa-zA-Z0-9]', text)
+
+def try_chitchat_reply(user_id: str, text: str, reply_token: str, token: str) -> bool:
+    """
+    テキストがチャット（日誌以外）と判定できる場合に応答し True を返す。
+    日誌として処理すべき場合は False を返す。
+    判定はキーワードマッチングで行い、あいまいな場合は日誌として処理する。
+    """
+    t = text.strip()
+    tl = t.lower()
+
+    # ── カテゴリH: 絵文字・記号・超短文 ──────────────────────
+    if _is_emoji_only(t):
+        reply_text(reply_token, "😊 日誌はいつでも音声かテキストで送ってください！")
+        return True
+
+    if len(t) <= 2:
+        reply_text(reply_token, "日誌を送るときは、今日の業務内容を音声かテキストで送ってください。")
+        return True
+
+    if re.fullmatch(r'[\d\s\W]+', t):
+        reply_text(reply_token, "日誌を送るときは、今日の業務内容を音声かテキストで送ってください。")
+        return True
+
+    # ── カテゴリA: 挨拶 ──────────────────────────────────────
+    if re.fullmatch(r'おはよ[うー]?|おはようございます?[。！]*', t):
+        reply_text(reply_token,
+            "おはようございます！☀️ 今日もよろしくお願いします。\n"
+            "日誌はいつでも送ってください🎤")
+        return True
+
+    if re.fullmatch(r'こんにち[はわ][。！]*', t):
+        reply_text(reply_token, "こんにちは！😊 何かあればいつでもどうぞ。")
+        return True
+
+    if re.fullmatch(r'こんばんは[。！]*', t):
+        reply_text(reply_token,
+            "こんばんは！🌙 今日の日誌はもう送りましたか？\n"
+            "まだなら音声やテキストで送ってみてください。")
+        return True
+
+    if re.fullmatch(r'お疲れ[様さ]?[です。！]*|おつかれ[様さ]?[です。！]*', t):
+        reply_text(reply_token,
+            "お疲れ様でした！🎉 今日の日誌を忘れずに送ってくださいね。")
+        return True
+
+    if re.fullmatch(r'ありがとう[。！]*|ありがとうございます?[。！]*|ありがとうございました[。！]*', t):
+        reply_text(reply_token, "どういたしまして😊 またいつでも声をかけてください！")
+        return True
+
+    if re.fullmatch(r'よろしく[お願いしますございます。！]*', t):
+        reply_text(reply_token,
+            "こちらこそよろしくお願いします！🙏 困ったことがあればいつでもどうぞ。")
+        return True
+
+    if re.fullmatch(r'は[い]?じめまして[。！]*', t):
+        reply_text(reply_token,
+            "はじめまして！😊\n"
+            "このサービスは業務日誌を音声やテキストで簡単に記録できるサービスです。\n"
+            f"使い方はこちら：\n{GUIDE_URL}")
+        return True
+
+    # ── カテゴリC: テスト・様子見 ──────────────────────────────
+    if re.fullmatch(r'テスト[送信]*[。！]*|test|てすと', tl):
+        reply_text(reply_token,
+            "✅ ちゃんと届いています！\n"
+            "日誌を送るときはそのまま今日の業務内容を話すか、\n"
+            "テキストで入力してください。")
+        return True
+
+    if re.fullmatch(r'hello|hi|hey|ハロー|ヘイ', tl):
+        reply_text(reply_token, "こんにちは！😊 日誌は音声かテキストで送ってください🎤")
+        return True
+
+    # ── カテゴリB: 使い方・ヘルプ ────────────────────────────
+    if re.search(r'ヘルプ|使い方|操作方法|どうやって使|使い方を教', t) \
+            or re.search(r'help', tl):
+        reply_text(reply_token, f"📖 使い方ガイドはこちらです：\n{GUIDE_URL}")
+        return True
+
+    if re.search(r'音声.{0,10}(送り方|方法|やり方|操作|使い方)|マイク.{0,10}(使い方|操作|どう)', t):
+        reply_text(reply_token,
+            "🎙️ 音声で日誌を入力する手順\n"
+            "━━━━━━━━━━━\n"
+            "① 画面左下のキーボードマークをタップ\n\n"
+            "② スタンプボタンの右にある\n"
+            "　 マイクボタンをタップ → 録音開始\n\n"
+            "③ 今日の業務内容を話す\n"
+            "　 （目安：15秒〜2分）\n\n"
+            "④ もう一度マイクボタンをタップ\n"
+            "　 → 録音停止・送信\n\n"
+            "⑤ 内容を確認して「✅ はい」\n"
+            "━━━━━━━━━━━\n"
+            "では話してみてください！")
+        return True
+
+    if re.search(r'テキスト.{0,10}(送れ|使え|できる|ok|OK)|文字.{0,10}(送れ|使え|できる)|文章で送', t):
+        reply_text(reply_token,
+            "はい、テキストもOKです📝\n"
+            "今日の業務内容をそのまま入力して送ってください。\n"
+            "AIが日誌の形に整理します！")
+        return True
+
+    if re.search(r'写真.{0,10}(登録|送り方|方法|やり方|どう)|写真を(登録|追加|送)', t):
+        reply_text(reply_token,
+            "📸 写真の登録はメニューの「②写真を登録」からどうぞ。\n"
+            "日付を入力してから写真を送ってください。")
+        return True
+
+    if re.search(r'スプレッドシート|記録を見|日誌を見|過去の日誌|昨日の日誌|先週の日誌|記録の確認', t):
+        reply_text(reply_token,
+            "📊 過去の記録はメニューの「スプレッドシートを開く」からご確認いただけます。")
+        return True
+
+    # ── カテゴリD: AI・サービスへの質問 ─────────────────────
+    if re.search(r'AIですか|ロボットですか|ボットですか|人間ですか', t) \
+            or re.search(r'bot\s*ですか', tl):
+        reply_text(reply_token,
+            "はい、AIを使った自動日誌記録サービスです🤖\n"
+            "音声やテキストを送ると、AIが日誌の形に整理して\n"
+            "スプレッドシートに記録します。")
+        return True
+
+    if re.search(r'誰が作った|誰が管理|運営は誰|作った人', t):
+        reply_text(reply_token,
+            "このサービスは管理者が運営しています。\n"
+            "ご不明な点はメニューの「フィードバック・お問い合わせ」から\n"
+            "ご連絡ください。")
+        return True
+
+    if re.search(r'雑談|なんでも(しゃべ|話せ|聞け)|何でも聞け', t):
+        reply_text(reply_token,
+            "ごめんなさい、日誌の記録専用サービスなので\n"
+            "雑談への対応は難しいです😅\n"
+            "業務内容を送ってもらえると助かります！")
+        return True
+
+    # ── カテゴリE: 誤送信・やり直し ──────────────────────────
+    if re.search(r'間違え|誤送信|取り消し|消して|送り間違', t):
+        reply_text(reply_token,
+            "確認画面が表示されている場合は「⛔ キャンセル」をタップしてください。\n"
+            "AI処理中の場合は「キャンセル」とテキストで送ると中断できます。")
+        return True
+
+    # ── カテゴリF: 登録関連 ──────────────────────────────────
+    if re.search(r'登録したい|登録方法|どうやって登録|登録はどうすれば|登録の仕方', t):
+        reply_text(reply_token, f"登録はこちらのフォームからお願いします📝：\n{LIFF_URL}")
+        return True
+
+    if re.search(r'登録(できてる|済み|確認|されてる|してる)|自分は登録', t):
+        member = get_member(user_id, token)
+        if member:
+            reply_text(reply_token, "✅ 登録済みです。日誌はいつでも送れますよ！")
+        else:
+            reply_text(reply_token, NOT_REGISTERED_MESSAGE)
+        return True
+
+    # ── カテゴリG: 不具合・エラー報告 ───────────────────────
+    if re.search(r'動かない|壊れ(てる|た)|おかしい|バグ|エラーが出|不具合', t):
+        reply_text(reply_token,
+            "ご不便をおかけしてすみません🙏\n"
+            "メニューの「フィードバック・お問い合わせ」から\n"
+            "詳しい状況を教えていただけますか？")
+        return True
+
+    if re.search(r'(返事|返信|反応).{0,5}(来ない|遅い|ない)|待ってる(んだけど|のに|けど)', t):
+        reply_text(reply_token,
+            "AIの処理には10〜30秒かかることがあります。\n"
+            "もうしばらくお待ちください⏳\n"
+            "しばらく経っても届かない場合は、もう一度送ってみてください。")
+        return True
+
+    # ── カテゴリI: 過去記録・修正 ────────────────────────────
+    if re.search(r'(日誌|記録).{0,10}(修正|直したい|書き直し|変えたい)', t):
+        reply_text(reply_token,
+            "確認画面が出ている場合は「✏️ 修正する」をタップしてください。\n"
+            "すでに記録済みの場合は、スプレッドシートを直接編集するか、\n"
+            "改めて日誌を送ってください。")
+        return True
+
+    # ── カテゴリJ: 感情・反応 ────────────────────────────────
+    if re.fullmatch(r'面倒[くさい。！]*|めんどう[くさい。！]*|めんどい[。！]*', t):
+        reply_text(reply_token,
+            "音声なら話すだけなので、ぜひ試してみてください🎤\n"
+            "慣れると1〜2分で終わりますよ！")
+        return True
+
+    if re.fullmatch(r'(すごい|すごー+|便利|いいね|最高|完璧|ナイス)[！!。]*', t):
+        reply_text(reply_token, "ありがとうございます😊 これからもよろしくお願いします！")
+        return True
+
+    if re.fullmatch(r'わからない[。！]*|むずかしい[。！]*|難しい[。！]*|どうすれば[いい]*[？?。！]*', t):
+        reply_text(reply_token,
+            f"📖 使い方ガイドをご覧ください：\n{GUIDE_URL}\n\n"
+            "困ったことはメニューのフィードバックからも聞けます！")
+        return True
+
+    return False
+
+
 # ========== Gemini ==========
 
 def call_gemini_audio(audio_b64: str) -> str:
@@ -880,6 +1085,10 @@ def handle_text(event):
             args=(user_id, original, text),
             daemon=True
         ).start()
+        return
+
+    # チャット判定（日誌以外のメッセージへの応答）
+    if try_chitchat_reply(user_id, text, event.reply_token, token):
         return
 
     # 登録状況を確認
