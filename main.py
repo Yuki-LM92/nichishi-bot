@@ -411,6 +411,8 @@ def upload_photo_to_drive(image_bytes: bytes, filename: str, token: str) -> str:
         },
         timeout=30
     )
+    if not resp.ok:
+        logger.error("[upload_photo_to_drive] status=%s body=%s", resp.status_code, resp.text[:500])
     resp.raise_for_status()
     file_id = resp.json()['id']
     requests.post(
@@ -1168,7 +1170,8 @@ def handle_image(event):
                     )]
                 )
             )
-    except Exception:
+    except Exception as e:
+        logger.error("[handle_image error] %s", e, exc_info=True)
         push_text(user_id, "⚠️ 写真のアップロードに失敗しました。\nしばらくしてからお試しください。")
 
 @handler.add(MessageEvent, message=AudioMessageContent)
