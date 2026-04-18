@@ -256,7 +256,7 @@ def get_all_members(token: str) -> list:
     url = f"https://sheets.googleapis.com/v4/spreadsheets/{MASTER_SPREADSHEET_ID}/values/メンバー!A2:E"
     resp = requests.get(url, headers=_auth_headers(token), timeout=15)
     if not resp.ok:
-        logger.error("[get_all_members] status=%s body=%s", resp.status_code, resp.text[:500])
+        logger.error("[REG-01] get_all_members status=%s body=%s", resp.status_code, resp.text[:500])
     resp.raise_for_status()
     return resp.json().get('values', [])
 
@@ -295,7 +295,7 @@ def append_member(user_id: str, name: str, email: str, token: str, spreadsheet_u
     payload = {"values": [[name, email, user_id, spreadsheet_url, now]]}
     resp = requests.post(url, json=payload, headers=_json_headers(token), timeout=15)
     if not resp.ok:
-        logger.error("[append_member] status=%s body=%s", resp.status_code, resp.text[:500])
+        logger.error("[REG-02] append_member status=%s body=%s", resp.status_code, resp.text[:500])
     resp.raise_for_status()
 
 def create_user_spreadsheet(name: str, email: str, token: str) -> tuple:
@@ -416,7 +416,7 @@ def upload_photo_to_drive(image_bytes: bytes, filename: str, token: str) -> str:
         timeout=30
     )
     if not resp.ok:
-        logger.error("[upload_photo_to_drive] status=%s body=%s", resp.status_code, resp.text[:500])
+        logger.error("[PHO-02] upload_photo_to_drive status=%s body=%s", resp.status_code, resp.text[:500])
     resp.raise_for_status()
     file_id = resp.json()['id']
     requests.post(
@@ -800,8 +800,9 @@ def _process_audio_async(user_id: str, audio_b64: str) -> None:
     except requests.exceptions.Timeout:
         push_text(user_id, "⏱️ AIの処理に時間がかかっています。\nしばらくしてからもう一度送ってください。")
         return
-    except Exception:
-        push_text(user_id, "⚠️ 音声の解析に失敗しました。\n少し長めに話して、もう一度送ってください。\n（目安：30秒以上）")
+    except Exception as e:
+        logger.error("[REC-01] audio gemini error: %s", e)
+        push_text(user_id, "⚠️ 音声の解析に失敗しました（REC-01）。\n少し長めに話して、もう一度送ってください。\n（目安：30秒以上）")
         return
 
     if user_id in pending_cancel:
@@ -824,8 +825,9 @@ def _process_text_async(user_id: str, text: str) -> None:
     except requests.exceptions.Timeout:
         push_text(user_id, "⏱️ AIの処理に時間がかかっています。\nしばらくしてからもう一度送ってください。")
         return
-    except Exception:
-        push_text(user_id, "⚠️ テキストの解析に失敗しました。\nもう一度送ってください。")
+    except Exception as e:
+        logger.error("[REC-01] text gemini error: %s", e)
+        push_text(user_id, "⚠️ テキストの解析に失敗しました（REC-01）。\nもう一度送ってください。")
         return
 
     if user_id in pending_cancel:
@@ -1019,8 +1021,8 @@ def register():
         return cors_response({'status': 'ok'})
 
     except Exception:
-        logger.exception("[register error]")
-        return cors_response({'error': 'internal server error'}, 500)
+        logger.exception("[REG-03] register error")
+        return cors_response({'error': 'internal server error (REG-03)'}, 500)
 
 # ========== LINE event handlers ==========
 
@@ -1091,8 +1093,9 @@ def handle_text(event):
         try:
             save_feedback(user_id, category, text, token)
             push_text(user_id, "✅ ありがとうございます！内容を受け付けました🙏\n確認次第ご連絡します。")
-        except Exception:
-            push_text(user_id, "⚠️ 送信中にエラーが発生しました。\nしばらくしてからお試しください。")
+        except Exception as e:
+            logger.error("[FB-01] save_feedback error: %s", e)
+            push_text(user_id, "⚠️ 送信中にエラーが発生しました（FB-01）。\nしばらくしてからお試しください。")
         return
 
     # 修正モード
@@ -1175,8 +1178,8 @@ def handle_image(event):
                 )
             )
     except Exception as e:
-        logger.error("[handle_image error] %s", e, exc_info=True)
-        push_text(user_id, "⚠️ 写真のアップロードに失敗しました。\nしばらくしてからお試しください。")
+        logger.error("[PHO-01/02] handle_image error: %s", e, exc_info=True)
+        push_text(user_id, "⚠️ 写真のアップロードに失敗しました（PHO-02）。\nしばらくしてからお試しください。")
 
 @handler.add(MessageEvent, message=AudioMessageContent)
 def handle_audio(event):
@@ -1236,16 +1239,16 @@ def handle_postback(event):
                 send_to_slack(member_name, sheet_name, structured)
                 pending_del(user_id, token)
             else:
-                reply_text(event.reply_token, "⚠️ スプレッドシートへの記録に失敗しました。\n管理者にお問い合わせください。")
+                reply_text(event.reply_token, "⚠️ スプレッドシートへの記録に失敗しました（REC-02）。\n管理者にお問い合わせください。")
                 pending_del(user_id, token)
         except Exception as e:
-            logger.error("[confirm_yes error] %s", e)
+            logger.error("[REC-03] confirm_yes error: %s", e)
             with ApiClient(configuration) as api_client:
                 MessagingApi(api_client).reply_message(
                     ReplyMessageRequest(
                         reply_token=event.reply_token,
                         messages=[TextMessage(
-                            text="⚠️ 記録中にエラーが発生しました。\nもう一度試しますか？",
+                            text="⚠️ 記録中にエラーが発生しました（REC-03）。\nもう一度試しますか？",
                             quick_reply=QuickReply(items=[
                                 QuickReplyItem(action=PostbackAction(label='✅ リトライ', data='confirm_yes')),
                                 QuickReplyItem(action=PostbackAction(label='⛔ キャンセル', data='confirm_cancel')),
@@ -1403,10 +1406,11 @@ def handle_postback(event):
             if resp.ok:
                 reply_text(event.reply_token, f"✅ {sheet_title}の活動写真を追加しました！")
             else:
-                reply_text(event.reply_token, "⚠️ 写真の追加に失敗しました。\nしばらくしてからお試しください。")
+                logger.error("[PHO-03] add_photo sheets status=%s body=%s", resp.status_code, resp.text[:300])
+                reply_text(event.reply_token, "⚠️ 写真の追加に失敗しました（PHO-03）。\nしばらくしてからお試しください。")
         except Exception as e:
-            logger.error("[add_photo error] %s", e)
-            reply_text(event.reply_token, "⚠️ 写真の追加中にエラーが発生しました。")
+            logger.error("[PHO-03] add_photo error: %s", e)
+            reply_text(event.reply_token, "⚠️ 写真の追加中にエラーが発生しました（PHO-03）。")
 
     elif data == 'cancel_photo':
         try:
