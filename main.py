@@ -255,6 +255,8 @@ def pending_del(user_id: str, token: str) -> None:
 def get_all_members(token: str) -> list:
     url = f"https://sheets.googleapis.com/v4/spreadsheets/{MASTER_SPREADSHEET_ID}/values/メンバー!A2:E"
     resp = requests.get(url, headers=_auth_headers(token), timeout=15)
+    if not resp.ok:
+        logger.error("[get_all_members] status=%s body=%s", resp.status_code, resp.text[:500])
     resp.raise_for_status()
     return resp.json().get('values', [])
 
@@ -292,6 +294,8 @@ def append_member(user_id: str, name: str, email: str, token: str, spreadsheet_u
     )
     payload = {"values": [[name, email, user_id, spreadsheet_url, now]]}
     resp = requests.post(url, json=payload, headers=_json_headers(token), timeout=15)
+    if not resp.ok:
+        logger.error("[append_member] status=%s body=%s", resp.status_code, resp.text[:500])
     resp.raise_for_status()
 
 def create_user_spreadsheet(name: str, email: str, token: str) -> tuple:
