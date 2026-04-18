@@ -107,6 +107,13 @@ CORRECTION_PROMPT = f"""
 あなたは地域おこし協力隊の業務日報の記録係です。
 以下の「現在の日報」に「修正指示」を適用した結果を出力してください。
 
+【修正指示の解釈ルール】
+修正指示は口語・略記・記号など様々な形式で書かれる。以下のように解釈すること：
+- 「A → B」「A ⇒ B」「A × → B」「A を B に」「A は B」はすべて「A を B に置き換える」
+- 「A × 」「A を削除」「A はなし」は「A を削除する」
+- 文中に出てくる語句が修正指示のキーワードと一致する場合、それを対象と判断する
+- 指示が短くても文脈から意図を読み取り、最も自然な修正を行うこと
+
 【絶対ルール】
 1. 修正指示で言及されていない項目は、現在の日報の文字列を一字一句そのままコピーすること。推測・省略・補完は一切しないこと。
 2. 修正指示で言及された項目だけを、修正指示の内容で書き換える。
@@ -745,9 +752,11 @@ def try_chitchat_reply(user_id: str, text: str, reply_token: str, token: str) ->
 
 def call_gemini_audio(audio_b64: str) -> str:
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
+    today = datetime.now().strftime('%Y年%m月%d日')
+    prompt = PROMPT + f"\n※ 日付の言及がない場合は今日の日付（{today}）を使用してください。"
     payload = {"contents": [{"parts": [
         {"inline_data": {"mime_type": "audio/mp4", "data": audio_b64}},
-        {"text": PROMPT}
+        {"text": prompt}
     ]}]}
     resp = requests.post(url, json=payload, timeout=120)
     resp.raise_for_status()
@@ -761,7 +770,9 @@ def call_gemini_audio(audio_b64: str) -> str:
 
 def call_gemini_text(text: str) -> str:
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
-    payload = {"contents": [{"parts": [{"text": TEXT_PROMPT + text}]}]}
+    today = datetime.now().strftime('%Y年%m月%d日')
+    date_note = f"※ 日付の言及がない場合は今日の日付（{today}）を使用してください。\n\n"
+    payload = {"contents": [{"parts": [{"text": TEXT_PROMPT + date_note + text}]}]}
     resp = requests.post(url, json=payload, timeout=60)
     resp.raise_for_status()
     candidates = resp.json().get('candidates', [])
