@@ -560,13 +560,12 @@ def save_feedback(user_id: str, category: str, message: str, token: str) -> None
     resp = requests.post(url, json=payload, headers=_json_headers(token), timeout=15)
     resp.raise_for_status()
 
-    if SLACK_WEBHOOK_URL:
+    if SLACK_WEBHOOK_URL and category == '管理者への連絡':
         try:
             requests.post(SLACK_WEBHOOK_URL, json={
                 "text": (
-                    f"📩 *フィードバックが届きました*\n\n"
+                    f"📞 *管理者への連絡が届きました*\n\n"
                     f"送信者：{name}\n"
-                    f"カテゴリ：{category}\n"
                     f"内容：{message}\n\n"
                     f"日時：{now}"
                 )
