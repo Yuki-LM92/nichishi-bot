@@ -896,6 +896,16 @@ def _process_text_async(user_id: str, text: str) -> None:
 
     _send_confirm_push(user_id, structured)
 
+def _process_feedback_async(user_id: str, category: str, message: str) -> None:
+    """フィードバック保存をバックグラウンドで実行する（スレッド用）。"""
+    try:
+        token = get_sheets_token()
+        save_feedback(user_id, category, message, token)
+        push_text(user_id, "✅ ありがとうございます！内容を受け付けました🙏\n確認次第ご連絡します。")
+    except Exception as e:
+        logger.error("[FB-01] save_feedback error: %s", e)
+        push_text(user_id, "⚠️ 送信中にエラーが発生しました（FB-01）。\nしばらくしてからお試しください。")
+
 def _process_correction_async(user_id: str, original: str, correction_text: str) -> None:
     """修正処理をバックグラウンドで実行する（スレッド用）。"""
     try:
@@ -1143,12 +1153,11 @@ def handle_text(event):
         category = session_data.get('category', '')
         session_del(user_id, token)
         reply_text(event.reply_token, "⏳ 送信中です...")
-        try:
-            save_feedback(user_id, category, text, token)
-            push_text(user_id, "✅ ありがとうございます！内容を受け付けました🙏\n確認次第ご連絡します。")
-        except Exception as e:
-            logger.error("[FB-01] save_feedback error: %s", e)
-            push_text(user_id, "⚠️ 送信中にエラーが発生しました（FB-01）。\nしばらくしてからお試しください。")
+        threading.Thread(
+            target=_process_feedback_async,
+            args=(user_id, category, text),
+            daemon=True
+        ).start()
         return
 
     # 修正モード
