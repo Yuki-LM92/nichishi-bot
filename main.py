@@ -518,7 +518,36 @@ def link_rich_menu(user_id: str, menu_id: str) -> None:
 
 # ========== Feedback ==========
 
+def _ensure_feedback_sheet(token: str) -> None:
+    """フィードバックシートが存在しない場合、ヘッダー付きで自動作成する。"""
+    meta_url = (
+        f"https://sheets.googleapis.com/v4/spreadsheets/{MASTER_SPREADSHEET_ID}"
+        f"?fields=sheets.properties.title"
+    )
+    resp = requests.get(meta_url, headers=_auth_headers(token), timeout=15)
+    resp.raise_for_status()
+    titles = [s['properties']['title'] for s in resp.json().get('sheets', [])]
+    if 'フィードバック' in titles:
+        return
+
+    # シート作成
+    batch_url = (
+        f"https://sheets.googleapis.com/v4/spreadsheets/{MASTER_SPREADSHEET_ID}:batchUpdate"
+    )
+    requests.post(batch_url, json={"requests": [{"addSheet": {"properties": {"title": "フィードバック"}}}]},
+                  headers=_json_headers(token), timeout=15).raise_for_status()
+
+    # ヘッダー行を追加
+    header_url = (
+        f"https://sheets.googleapis.com/v4/spreadsheets/{MASTER_SPREADSHEET_ID}"
+        f"/values/フィードバック!A1:append?valueInputOption=USER_ENTERED"
+    )
+    requests.post(header_url, json={"values": [["日時", "名前", "カテゴリ", "内容"]]},
+                  headers=_json_headers(token), timeout=15).raise_for_status()
+
+
 def save_feedback(user_id: str, category: str, message: str, token: str) -> None:
+    _ensure_feedback_sheet(token)
     member = get_member(user_id, token)
     name = member['name'] if member else '不明'
     now = datetime.now().strftime('%Y/%m/%d %H:%M')
