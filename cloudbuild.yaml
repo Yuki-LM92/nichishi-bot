@@ -1,5 +1,30 @@
 steps:
+  # ── Step 1: Lint ──────────────────────────────────────
+  # コードスタイル・構文エラーをデプロイ前に検出する
+  - name: 'python:3.11-slim'
+    id: lint
+    entrypoint: sh
+    args:
+      - '-c'
+      - |
+        pip install ruff==0.4.4 --quiet &&
+        ruff check main.py
+
+  # ── Step 2: Unit Test ─────────────────────────────────
+  # 純粋関数のユニットテストを実行する（外部API呼び出しなし）
+  - name: 'python:3.11-slim'
+    id: test
+    entrypoint: sh
+    args:
+      - '-c'
+      - |
+        pip install -r requirements.txt -r requirements-dev.txt --quiet &&
+        pytest test_main.py -v
+
+  # ── Step 3: Deploy ────────────────────────────────────
+  # lint と test が両方グリーンの場合のみ実行される
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    id: deploy
     entrypoint: gcloud
     args:
       - run
