@@ -7,6 +7,7 @@ import threading
 import logging
 import concurrent.futures
 import requests
+import calendar
 from datetime import datetime, timedelta
 from flask import Flask, request, abort
 from linebot.v3 import WebhookHandler
@@ -47,11 +48,16 @@ pending: dict = {}
 _session_cache: dict = {}
 pending_cancel: set = set()
 _token_cache: dict = {'token': None, 'expires_at': 0.0}
+_members_cache: dict = {'data': None, 'ts': 0.0}
 _setup_done: bool = False
+
+_MEMBERS_CACHE_TTL = 60  # メンバーリストのキャッシュ有効期間（秒）
 
 # ---- スレッドセーフ ----
 _token_lock  = threading.Lock()
 _setup_lock  = threading.Lock()
+_cancel_lock = threading.Lock()   # pending_cancel の check-and-discard を原子的に行う
+_cache_lock  = threading.Lock()   # pending / _session_cache の複合操作を保護
 _executor    = concurrent.futures.ThreadPoolExecutor(max_workers=8, thread_name_prefix='nichi')
 
 # ---- 定数 ----
@@ -70,7 +76,13 @@ _ACT_START_ROW = 10
 _ACT_MAX_ROWS  = 7
 _NOTES_ROW     = 17
 
-_SAFE_FILE_ID_RE = re.compile(r'^[A-Za-z0-9_-]+$')
+_SAFE_FILE_ID_RE    = re.compile(r'^[A-Za-z0-9_-]+$')
+_SAFE_SHEET_TITLE_RE = re.compile(r'^\d{1,2}月\d{1,2}日$')
+
+def _sheet_range(sheet_title: str, cell: str) -> str:
+    if not _SAFE_SHEET_TITLE_RE.match(sheet_title):
+        raise ValueError(f"Invalid sheet title: {sheet_title!r}")
+    return f"'{sheet_title}'!{cell}"
 
 _REPORT_FORMAT = """
 📅 日付：（言及があれば。なければ空欄）
@@ -149,7 +161,10 @@ def get_sheets_token() -> str:
         )
         creds.refresh(google.auth.transport.requests.Request())
         _token_cache['token'] = creds.token
-        _token_cache['expires_at'] = time.time() + 3600
+        if creds.expiry:
+            _token_cache['expires_at'] = creds.expiry.timestamp()
+        else:
+            _token_cache['expires_at'] = time.time() + 3600
         return creds.token
 
 # ========== Helpers ==========
@@ -176,10 +191,11 @@ def _session_rows(token: str) -> list:
 
 def session_get(user_id: str, token: str) -> tuple:
     """セッション状態を返す。キャッシュ優先、TTL切れならNone。"""
-    cached = _session_cache.get(user_id)
-    if cached and time.time() - cached['ts'] <= SESSION_TTL:
-        return cached['type'], cached['data']
-    _session_cache.pop(user_id, None)
+    with _cache_lock:
+        cached = _session_cache.get(user_id)
+        if cached and time.time() - cached['ts'] <= SESSION_TTL:
+            return cached['type'], cached['data']
+        _session_cache.pop(user_id, None)
 
     for row in _session_rows(token):
         if len(row) >= 2 and row[0] == user_id:
@@ -190,14 +206,16 @@ def session_get(user_id: str, token: str) -> tuple:
             ts = float(row[3]) if len(row) > 3 and row[3] else 0.0
             if time.time() - ts > SESSION_TTL:
                 return None, {}
-            _session_cache[user_id] = {'type': state_type, 'data': data, 'ts': ts}
+            with _cache_lock:
+                _session_cache[user_id] = {'type': state_type, 'data': data, 'ts': ts}
             return state_type, data
     return None, {}
 
 def session_set(user_id: str, state_type: str, data: dict, token: str) -> None:
     """セッション状態を保存（メモリ+スプシ）。"""
     ts = time.time()
-    _session_cache[user_id] = {'type': state_type, 'data': data, 'ts': ts}
+    with _cache_lock:
+        _session_cache[user_id] = {'type': state_type, 'data': data, 'ts': ts}
     values = [[user_id, state_type, json.dumps(data), str(ts)]]
     rows = _session_rows(token)
     for i, row in enumerate(rows):
@@ -213,7 +231,8 @@ def session_set(user_id: str, state_type: str, data: dict, token: str) -> None:
 
 def session_del(user_id: str, token: str) -> None:
     """セッション状態を削除（メモリ+スプシ）。"""
-    _session_cache.pop(user_id, None)
+    with _cache_lock:
+        _session_cache.pop(user_id, None)
     rows = _session_rows(token)
     for i, row in enumerate(rows):
         if row and row[0] == user_id:
@@ -247,16 +266,19 @@ def _pending_rows(token: str) -> list:
     return [r for r in resp.json().get('values', []) if r and r[0]]
 
 def pending_get(user_id: str, token: str) -> str:
-    if user_id in pending:
-        return pending[user_id]
+    with _cache_lock:
+        if user_id in pending:
+            return pending[user_id]
     for row in _pending_rows(token):
         if len(row) >= 2 and row[0] == user_id and row[1]:
-            pending[user_id] = row[1]
+            with _cache_lock:
+                pending[user_id] = row[1]
             return row[1]
     return ''
 
 def pending_set(user_id: str, text: str, token: str) -> None:
-    pending[user_id] = text
+    with _cache_lock:
+        pending[user_id] = text
     rows = _pending_rows(token)
     for i, row in enumerate(rows):
         if row and row[0] == user_id:
@@ -272,7 +294,8 @@ def pending_set(user_id: str, text: str, token: str) -> None:
                  headers=_json_headers(token), timeout=15)
 
 def pending_del(user_id: str, token: str) -> None:
-    pending.pop(user_id, None)
+    with _cache_lock:
+        pending.pop(user_id, None)
     rows = _pending_rows(token)
     for i, row in enumerate(rows):
         if row and row[0] == user_id:
@@ -284,12 +307,20 @@ def pending_del(user_id: str, token: str) -> None:
             return
 
 def get_all_members(token: str) -> list:
+    now = time.time()
+    with _cache_lock:
+        if _members_cache['data'] is not None and now - _members_cache['ts'] < _MEMBERS_CACHE_TTL:
+            return _members_cache['data']
     url = f"https://sheets.googleapis.com/v4/spreadsheets/{MASTER_SPREADSHEET_ID}/values/メンバー!A2:E"
     resp = requests.get(url, headers=_auth_headers(token), timeout=15)
     if not resp.ok:
-        logger.error("[REG-01] get_all_members status=%s body=%s", resp.status_code, resp.text[:500])
+        logger.error("[REG-01] get_all_members status=%s", resp.status_code)
     resp.raise_for_status()
-    return resp.json().get('values', [])
+    rows = resp.json().get('values', [])
+    with _cache_lock:
+        _members_cache['data'] = rows
+        _members_cache['ts'] = time.time()
+    return rows
 
 def extract_spreadsheet_id(value: str) -> str:
     if not value:
@@ -357,7 +388,7 @@ def get_template_sheet_id(spreadsheet_id: str, token: str) -> int | None:
     url = f"https://sheets.googleapis.com/v4/spreadsheets/{spreadsheet_id}"
     resp = requests.get(url, headers=_auth_headers(token), timeout=15)
     if not resp.ok:
-        raise ValueError(f"スプシ取得失敗 ID={repr(spreadsheet_id)} status={resp.status_code} body={resp.text[:200]}")
+        raise ValueError(f"スプシ取得失敗 status={resp.status_code}")
     for sheet in resp.json().get('sheets', []):
         if sheet['properties']['title'] == TEMPLATE_SHEET_NAME:
             return sheet['properties']['sheetId']
@@ -401,22 +432,23 @@ def write_to_sheet(spreadsheet_id: str, sheet_title: str, name: str,
             notes += '\n' + line
 
     data = [
-        {"range": f"'{sheet_title}'!{_DATE_CELL}", "values": [[f"令和{reiwa_year}年{month}月{day}日"]]},
-        {"range": f"'{sheet_title}'!{_NAME_CELL}", "values": [[_sanitize_cell(name)]]},
+        {"range": _sheet_range(sheet_title, _DATE_CELL), "values": [[f"令和{reiwa_year}年{month}月{day}日"]]},
+        {"range": _sheet_range(sheet_title, _NAME_CELL), "values": [[_sanitize_cell(name)]]},
     ]
     for i, (time_str, content) in enumerate(activities[:_ACT_MAX_ROWS]):
         row = _ACT_START_ROW + i
-        data.append({"range": f"'{sheet_title}'!A{row}", "values": [[_sanitize_cell(time_str)]]})
-        data.append({"range": f"'{sheet_title}'!B{row}", "values": [[_sanitize_cell(content)]]})
+        data.append({"range": _sheet_range(sheet_title, f"A{row}"), "values": [[_sanitize_cell(time_str)]]})
+        data.append({"range": _sheet_range(sheet_title, f"B{row}"), "values": [[_sanitize_cell(content)]]})
     overflow = activities[_ACT_MAX_ROWS:]
     notes_parts = []
     if notes and notes != 'なし':
         notes_parts.append(notes)
     if overflow:
+        logger.info("[WRITE-01] activity overflow rows=%d, folding %d to notes", len(activities), len(overflow))
         overflow_lines = '\n'.join(f"{t} {c}".strip() for t, c in overflow)
         notes_parts.append(f"【続き】\n{overflow_lines}")
     if notes_parts:
-        data.append({"range": f"'{sheet_title}'!B{_NOTES_ROW}", "values": [[_sanitize_cell('\n'.join(notes_parts))]]})
+        data.append({"range": _sheet_range(sheet_title, f"B{_NOTES_ROW}"), "values": [[_sanitize_cell('\n'.join(notes_parts))]]})
 
     url = f"https://sheets.googleapis.com/v4/spreadsheets/{spreadsheet_id}/values:batchUpdate"
     resp = requests.post(url, json={"valueInputOption": "RAW", "data": data},
@@ -450,12 +482,15 @@ def upload_photo_to_drive(image_bytes: bytes, filename: str, token: str) -> str:
         logger.error("[PHO-02] upload_photo_to_drive status=%s body=%s", resp.status_code, resp.text[:500])
     resp.raise_for_status()
     file_id = resp.json()['id']
-    requests.post(
+    perm_resp = requests.post(
         f'https://www.googleapis.com/drive/v3/files/{file_id}/permissions',
         json={'type': 'anyone', 'role': 'reader'},
         headers={'Authorization': f'Bearer {token}', 'Content-Type': 'application/json'},
         timeout=15
     )
+    if not perm_resp.ok:
+        logger.error("[PHO-05] set_public_permission failed file_id=%s status=%s",
+                     file_id, perm_resp.status_code)
     return file_id
 
 def extract_date(structured_text: str) -> tuple:
@@ -466,7 +501,8 @@ def extract_date(structured_text: str) -> tuple:
             m = re.search(r'(\d{1,2})[/月](\d{1,2})', date_str)
             if m:
                 mo, dy = int(m.group(1)), int(m.group(2))
-                if 1 <= mo <= 12 and 1 <= dy <= 31:
+                max_day = calendar.monthrange(datetime.now().year, mo)[1] if 1 <= mo <= 12 else 0
+                if 1 <= mo <= 12 and 1 <= dy <= max_day:
                     return mo, dy
     today = datetime.now()
     return today.month, today.day
@@ -583,8 +619,8 @@ def save_feedback(user_id: str, category: str, message: str, token: str) -> None
                     f"日時：{now}"
                 )
             }, timeout=10)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("[FB-02] slack admin notify failed: %s", e)
 
 # ========== Chitchat QA ==========
 
@@ -793,15 +829,22 @@ def try_chitchat_reply(user_id: str, text: str, reply_token: str, token: str) ->
 # ========== Gemini ==========
 
 _GEMINI_URL = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
-_GEMINI_HEADERS = {"x-goog-api-key": GEMINI_API_KEY, "Content-Type": "application/json"}
 
 def _call_gemini(payload: dict, timeout: int = 60) -> str:
-    resp = requests.post(_GEMINI_URL, json=payload, headers=_GEMINI_HEADERS, timeout=timeout)
+    headers = {"x-goog-api-key": GEMINI_API_KEY, "Content-Type": "application/json"}
+    resp = requests.post(_GEMINI_URL, json=payload, headers=headers, timeout=timeout)
     resp.raise_for_status()
     candidates = resp.json().get('candidates', [])
     if not candidates:
         raise ValueError("Gemini returned empty candidates")
-    text = candidates[0]['content']['parts'][0]['text'].strip()
+    candidate = candidates[0]
+    finish_reason = candidate.get('finishReason', '')
+    if finish_reason in ('SAFETY', 'RECITATION', 'OTHER'):
+        raise ValueError(f"Gemini blocked response: finishReason={finish_reason}")
+    parts = candidate.get('content', {}).get('parts', [])
+    if not parts:
+        raise ValueError("Gemini returned no parts")
+    text = parts[0].get('text', '').strip()
     if not text:
         raise ValueError("Gemini returned empty text")
     return text
@@ -864,16 +907,19 @@ def _process_input_async(user_id: str, content, is_audio: bool) -> None:
             push_text(user_id, "⚠️ テキストの解析に失敗しました（REC-01）。\nもう一度送ってください。")
         return
 
-    if user_id in pending_cancel:
-        pending_cancel.discard(user_id)
-        push_text(user_id, "⛔ キャンセル済みのため、記録しませんでした。")
-        return
+    with _cancel_lock:
+        if user_id in pending_cancel:
+            pending_cancel.discard(user_id)
+            push_text(user_id, "⛔ キャンセル済みのため、記録しませんでした。")
+            return
 
     try:
         token = get_sheets_token()
         pending_set(user_id, structured, token)
-    except Exception:
-        pending[user_id] = structured
+    except Exception as e:
+        logger.warning("[REC-05] pending_set failed, using in-memory fallback: %s", e)
+        with _cache_lock:
+            pending[user_id] = structured
 
     _send_confirm_push(user_id, structured)
 
@@ -894,17 +940,42 @@ def _process_correction_async(user_id: str, original: str, correction_text: str)
     except requests.exceptions.Timeout:
         push_text(user_id, "⏱️ AIの処理に時間がかかっています。\nもう一度送ってください。")
         return
-    except Exception:
+    except Exception as e:
+        logger.error("[REC-04] correction gemini error: %s", e)
         push_text(user_id, "⚠️ 処理中にエラーが発生しました。\nもう一度送ってください。")
         return
 
     try:
         token = get_sheets_token()
         pending_set(user_id, structured, token)
-    except Exception:
-        pending[user_id] = structured
+    except Exception as e:
+        logger.warning("[REC-05] pending_set failed, using in-memory fallback: %s", e)
+        with _cache_lock:
+            pending[user_id] = structured
 
     _send_confirm_push(user_id, structured)
+
+def _process_image_async(user_id: str, image_bytes: bytes, filename: str,
+                         month: int, day: int, token: str) -> None:
+    try:
+        file_id = upload_photo_to_drive(image_bytes, filename, token)
+        session_set(user_id, 'photo_pending', {'file_id': file_id, 'month': month, 'day': day}, token)
+        with ApiClient(configuration) as api_client:
+            MessagingApi(api_client).push_message(
+                push_message_request=PushMessageRequest(
+                    to=user_id,
+                    messages=[TextMessage(
+                        text=f"📸 アップロード完了！\n{month}月{day}日の活動写真として追加しますか？",
+                        quick_reply=QuickReply(items=[
+                            QuickReplyItem(action=PostbackAction(label='✅ 追加する', data='add_photo')),
+                            QuickReplyItem(action=PostbackAction(label='⛔ キャンセル', data='cancel_photo')),
+                        ])
+                    )]
+                )
+            )
+    except Exception as e:
+        logger.error("[PHO-02] upload error: %s", e)
+        push_text(user_id, "⚠️ 写真のアップロードに失敗しました（PHO-02）。\nしばらくしてからお試しください。")
 
 # ========== LINE helpers ==========
 
@@ -976,10 +1047,10 @@ def setup():
         return
     with _setup_lock:
         if not _setup_done:
-            _setup_done = True
             try:
                 token = get_sheets_token()
                 ensure_session_sheet(token)
+                _setup_done = True
             except Exception as e:
                 logger.error("[setup error] %s", e)
 
@@ -1034,8 +1105,8 @@ def register():
         spreadsheet_url = ''
         try:
             _, spreadsheet_url = create_user_spreadsheet(name, email, token)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.error("[REG-05] create_user_spreadsheet failed name=%s: %s", name, e)
 
         append_member(line_user_id, name, email, token, spreadsheet_url)
 
@@ -1062,7 +1133,7 @@ def register():
                 msg += (
                     "音声を送ってみてください🎤\n\n"
                     "📖 使い方ガイドはこちら：\n"
-                    "https://yuki-lm92.github.io/nichishi-register/guide.html"
+                    f"{GUIDE_URL}"
                 )
                 push_text(line_user_id, msg)
             except Exception:
@@ -1102,7 +1173,8 @@ def handle_text(event):
 
     # キャンセルは最優先（Sheets APIより先に処理）
     if text == 'キャンセル':
-        pending_cancel.add(user_id)
+        with _cancel_lock:
+            pending_cancel.add(user_id)
         try:
             token = get_sheets_token()
             pending_del(user_id, token)
@@ -1131,6 +1203,11 @@ def handle_text(event):
                     "日付を入力してください。\n例：4/10、4月10日、今日、昨日")
                 return
             month, day = int(m.group(1)), int(m.group(2))
+            max_day = calendar.monthrange(datetime.now().year, month)[1] if 1 <= month <= 12 else 0
+            if not (1 <= month <= 12 and 1 <= day <= max_day):
+                reply_text(event.reply_token,
+                    "日付が正しくありません。\n例：4/10、4月10日、今日、昨日")
+                return
         session_set(user_id, 'photo_ready', {'month': month, 'day': day}, token)
         reply_text(event.reply_token,
             f"✅ {month}月{day}日ですね！\nでは登録する写真を送ってください📸")
@@ -1190,34 +1267,21 @@ def handle_image(event):
     month, day = session_data['month'], session_data['day']
     session_del(user_id, token)
 
-    reply_text(event.reply_token, "📸 写真を受け取りました！アップロード中です...")
-
+    # 画像データをLINEサーバーから取得（同期・高速）
     try:
         with ApiClient(configuration) as api_client:
             image_bytes = MessagingApiBlob(api_client).get_message_content(event.message.id)
-
-        now = datetime.now()
-        filename = f"activity_{user_id}_{now.strftime('%Y%m%d_%H%M%S')}.jpg"
-        file_id = upload_photo_to_drive(image_bytes, filename, token)
-
-        session_set(user_id, 'photo_pending', {'file_id': file_id, 'month': month, 'day': day}, token)
-
-        with ApiClient(configuration) as api_client:
-            MessagingApi(api_client).push_message(
-                push_message_request=PushMessageRequest(
-                    to=user_id,
-                    messages=[TextMessage(
-                        text=f"📸 アップロード完了！\n{month}月{day}日の活動写真として追加しますか？",
-                        quick_reply=QuickReply(items=[
-                            QuickReplyItem(action=PostbackAction(label='✅ 追加する', data='add_photo')),
-                            QuickReplyItem(action=PostbackAction(label='⛔ キャンセル', data='cancel_photo')),
-                        ])
-                    )]
-                )
-            )
     except Exception as e:
-        logger.error("[PHO-01/02] handle_image error: %s", e, exc_info=True)
-        push_text(user_id, "⚠️ 写真のアップロードに失敗しました（PHO-02）。\nしばらくしてからお試しください。")
+        logger.error("[PHO-01] get_message_content error: %s", e)
+        reply_text(event.reply_token, "⚠️ 写真の取得に失敗しました（PHO-01）。\nもう一度送ってください。")
+        return
+
+    reply_text(event.reply_token, "📸 写真を受け取りました！アップロード中です...")
+
+    # Drive アップロードはバックグラウンドで実行（reply token 失効を回避）
+    now = datetime.now()
+    filename = f"activity_{user_id}_{now.strftime('%Y%m%d_%H%M%S')}.jpg"
+    _executor.submit(_process_image_async, user_id, image_bytes, filename, month, day, token)
 
 @handler.add(MessageEvent, message=AudioMessageContent)
 def handle_audio(event):
@@ -1431,7 +1495,7 @@ def _pb_add_photo(event):
         url = f"https://sheets.googleapis.com/v4/spreadsheets/{spreadsheet_id}/values:batchUpdate"
         resp = requests.post(url, json={
             "valueInputOption": "USER_ENTERED",
-            "data": [{"range": f"'{sheet_title}'!{PHOTO_CELL}", "values": [[f'=IMAGE("{image_url}")']]}]
+            "data": [{"range": _sheet_range(sheet_title, PHOTO_CELL), "values": [[f'=IMAGE("{image_url}")']]}]
         }, headers=_json_headers(token), timeout=15)
         if resp.ok:
             reply_text(event.reply_token, f"✅ {sheet_title}の活動写真を追加しました！")
