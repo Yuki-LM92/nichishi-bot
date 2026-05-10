@@ -323,10 +323,11 @@ def get_all_members(token: str) -> list:
         if _members_cache['data'] is not None and now - _members_cache['ts'] < _MEMBERS_CACHE_TTL:
             return _members_cache['data']
     url = f"https://sheets.googleapis.com/v4/spreadsheets/{MASTER_SPREADSHEET_ID}/values/メンバー!A2:E"
-    resp = requests.get(url, headers=_auth_headers(token), timeout=15)
+    resp = _http_retry('get', url, headers=_auth_headers(token), timeout=15)
     if not resp.ok:
-        logger.error("[REG-01] get_all_members status=%s", resp.status_code)
-    resp.raise_for_status()
+        logger.error("[REG-01] get_all_members status=%s body=%s", resp.status_code, resp.text[:200])
+        with _cache_lock:
+            return _members_cache['data'] if _members_cache['data'] is not None else []
     rows = resp.json().get('values', [])
     with _cache_lock:
         _members_cache['data'] = rows
@@ -364,6 +365,9 @@ def append_member(user_id: str, name: str, email: str, token: str, spreadsheet_u
     if not resp.ok:
         logger.error("[REG-02] append_member status=%s body=%s", resp.status_code, resp.text[:500])
     resp.raise_for_status()
+    with _cache_lock:
+        _members_cache['data'] = None
+        _members_cache['ts'] = 0.0
 
 def create_user_spreadsheet(name: str, email: str, token: str) -> tuple:
     if not TEMPLATE_SPREADSHEET_ID:
@@ -811,6 +815,8 @@ _GEMINI_URL = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_
 def _call_gemini(payload: dict, timeout: int = 60) -> str:
     headers = {"x-goog-api-key": GEMINI_API_KEY, "Content-Type": "application/json"}
     resp = requests.post(_GEMINI_URL, json=payload, headers=headers, timeout=timeout)
+    if not resp.ok:
+        logger.error("[GEMINI] status=%s body=%s", resp.status_code, resp.text[:500])
     resp.raise_for_status()
     candidates = resp.json().get('candidates', [])
     if not candidates:
@@ -1138,6 +1144,8 @@ def setup():
         return
     with _setup_lock:
         if not _setup_done:
+            if not SCHEDULER_SECRET:
+                logger.warning("[STARTUP] SCHEDULER_SECRET is not set. /weekly_summary endpoint is disabled.")
             try:
                 token = get_sheets_token()
                 ensure_session_sheet(token)
@@ -1294,7 +1302,12 @@ def handle_text(event):
         reply_text(event.reply_token, "⛔ キャンセルしました。\n処理中の場合も完了後に破棄します。")
         return
 
-    token = get_sheets_token()
+    try:
+        token = get_sheets_token()
+    except Exception as e:
+        logger.error("[SYS-01] get_sheets_token failed in handle_text: %s", e)
+        reply_text(event.reply_token, "⚠️ 一時的なエラーが発生しました。\nしばらくしてからもう一度お試しください。")
+        return
     session_type, session_data = session_get(user_id, token)
 
     # 写真登録：日付入力待ち
@@ -1332,8 +1345,12 @@ def handle_text(event):
 
     # 修正モード
     if session_type == 'correction':
-        session_del(user_id, token)
         original = pending_get(user_id, token)
+        if not original:
+            reply_text(event.reply_token, "⚠️ 修正する日誌が見つかりませんでした。\nもう一度音声を送ってください。")
+            session_del(user_id, token)
+            return
+        session_del(user_id, token)
         reply_text(event.reply_token, "✏️ 修正内容を受け取りました！\nAIが整理しています...")
         _executor.submit(_process_correction_async, user_id, original, text)
         return
@@ -1415,8 +1432,13 @@ def handle_audio(event):
         _session_cache.pop(user_id, None)
 
     # 音声データ取得・base64変換（reply_tokenを使う前に完了させる）
-    with ApiClient(configuration) as api_client:
-        audio_bytes = MessagingApiBlob(api_client).get_message_content(event.message.id)
+    try:
+        with ApiClient(configuration) as api_client:
+            audio_bytes = MessagingApiBlob(api_client).get_message_content(event.message.id)
+    except Exception as e:
+        logger.error("[AUD-01] get_message_content error: %s", e)
+        reply_text(event.reply_token, "⚠️ 音声の取得に失敗しました（AUD-01）。\nもう一度送ってください。")
+        return
     audio_b64 = base64.b64encode(audio_bytes).decode()
 
     # すぐに受付メッセージを返信（LINEのWebhookタイムアウト対策）
@@ -1431,7 +1453,12 @@ def handle_audio(event):
 
 def _pb_confirm_yes(event):
     user_id = event.source.user_id
-    token = get_sheets_token()
+    try:
+        token = get_sheets_token()
+    except Exception as e:
+        logger.error("[REC-03] get_sheets_token failed: %s", e)
+        reply_text(event.reply_token, "⚠️ 認証エラーが発生しました。\nしばらくしてからもう一度お試しください。")
+        return
     structured = pending_get(user_id, token)
     if not structured:
         reply_text(event.reply_token, "⚠️ 記録する内容が見つかりませんでした。\nもう一度音声を送ってください。")
@@ -1439,11 +1466,11 @@ def _pb_confirm_yes(event):
     try:
         sheet_name, member_name = record_to_sheet(user_id, structured)
         if sheet_name:
+            pending_del(user_id, token)
             reply_text(event.reply_token, f"✅ {sheet_name}の日報をスプレッドシートに記録しました！")
             send_to_slack(member_name, sheet_name, structured)
         else:
             reply_text(event.reply_token, "⚠️ スプレッドシートへの記録に失敗しました（REC-02）。\n管理者にお問い合わせください。")
-        pending_del(user_id, token)
     except Exception as e:
         logger.error("[REC-03] confirm_yes error: %s", e)
         with ApiClient(configuration) as api_client:
