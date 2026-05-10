@@ -234,11 +234,15 @@ def session_set(user_id: str, state_type: str, data: dict, token: str) -> None:
             row_num = i + 1
             url = (f"https://sheets.googleapis.com/v4/spreadsheets/{MASTER_SPREADSHEET_ID}"
                    f"/values/{SESSION_SHEET}!A{row_num}:D{row_num}?valueInputOption=RAW")
-            requests.put(url, json={"values": values}, headers=_json_headers(token), timeout=15)
+            resp = _http_retry('put', url, json={"values": values}, headers=_json_headers(token), timeout=15)
+            if not resp.ok:
+                logger.warning("[SES-01] session_set put failed status=%s", resp.status_code)
             return
     url = (f"https://sheets.googleapis.com/v4/spreadsheets/{MASTER_SPREADSHEET_ID}"
            f"/values/{SESSION_SHEET}!A:D:append?valueInputOption=RAW&insertDataOption=INSERT_ROWS")
-    requests.post(url, json={"values": values}, headers=_json_headers(token), timeout=15)
+    resp = _http_retry('post', url, json={"values": values}, headers=_json_headers(token), timeout=15)
+    if not resp.ok:
+        logger.warning("[SES-01] session_set append failed status=%s", resp.status_code)
 
 def session_del(user_id: str, token: str) -> None:
     """セッション状態を削除（メモリ+スプシ）。"""
@@ -250,8 +254,10 @@ def session_del(user_id: str, token: str) -> None:
             row_num = i + 1
             url = (f"https://sheets.googleapis.com/v4/spreadsheets/{MASTER_SPREADSHEET_ID}"
                    f"/values/{SESSION_SHEET}!A{row_num}:D{row_num}?valueInputOption=RAW")
-            requests.put(url, json={"values": [['', '', '', '']]},
-                        headers=_json_headers(token), timeout=15)
+            resp = _http_retry('put', url, json={"values": [['', '', '', '']]},
+                               headers=_json_headers(token), timeout=15)
+            if not resp.ok:
+                logger.warning("[SES-02] session_del failed status=%s", resp.status_code)
             return
 
 def ensure_session_sheet(token: str) -> None:
@@ -296,13 +302,17 @@ def pending_set(user_id: str, text: str, token: str) -> None:
             row_num = i + 1
             url = (f"https://sheets.googleapis.com/v4/spreadsheets/{MASTER_SPREADSHEET_ID}"
                    f"/values/{PENDING_SHEET}!A{row_num}:B{row_num}?valueInputOption=RAW")
-            requests.put(url, json={"values": [[user_id, text]]},
-                        headers=_json_headers(token), timeout=15)
+            resp = _http_retry('put', url, json={"values": [[user_id, text]]},
+                               headers=_json_headers(token), timeout=15)
+            if not resp.ok:
+                logger.warning("[PND-01] pending_set put failed status=%s", resp.status_code)
             return
     url = (f"https://sheets.googleapis.com/v4/spreadsheets/{MASTER_SPREADSHEET_ID}"
            f"/values/{PENDING_SHEET}!A:B:append?valueInputOption=RAW&insertDataOption=INSERT_ROWS")
-    requests.post(url, json={"values": [[user_id, text]]},
-                 headers=_json_headers(token), timeout=15)
+    resp = _http_retry('post', url, json={"values": [[user_id, text]]},
+                       headers=_json_headers(token), timeout=15)
+    if not resp.ok:
+        logger.warning("[PND-01] pending_set append failed status=%s", resp.status_code)
 
 def pending_del(user_id: str, token: str) -> None:
     with _cache_lock:
@@ -313,8 +323,10 @@ def pending_del(user_id: str, token: str) -> None:
             row_num = i + 1
             url = (f"https://sheets.googleapis.com/v4/spreadsheets/{MASTER_SPREADSHEET_ID}"
                    f"/values/{PENDING_SHEET}!A{row_num}:B{row_num}?valueInputOption=RAW")
-            requests.put(url, json={"values": [['', '']]},
-                        headers=_json_headers(token), timeout=15)
+            resp = _http_retry('put', url, json={"values": [['', '']]},
+                               headers=_json_headers(token), timeout=15)
+            if not resp.ok:
+                logger.warning("[PND-02] pending_del failed status=%s", resp.status_code)
             return
 
 def get_all_members(token: str) -> list:
@@ -379,7 +391,10 @@ def create_user_spreadsheet(name: str, email: str, token: str) -> tuple:
         timeout=30
     )
     resp.raise_for_status()
-    file_id = resp.json()['id']
+    file_id = resp.json().get('id')
+    if not file_id:
+        logger.error("[REG-05] Drive copy returned no file id body=%s", resp.text[:200])
+        raise ValueError("Drive copy returned no file id")
     perm_url = f'https://www.googleapis.com/drive/v3/files/{file_id}/permissions'
     for share_email in filter(None, [ADMIN_EMAIL, email]):
         try:
@@ -452,15 +467,15 @@ def write_to_sheet(spreadsheet_id: str, sheet_title: str, name: str,
         data.append({"range": _sheet_range(sheet_title, f"A{row}"), "values": [[_sanitize_cell(time_str)]]})
         data.append({"range": _sheet_range(sheet_title, f"B{row}"), "values": [[_sanitize_cell(content)]]})
     overflow = activities[_ACT_MAX_ROWS:]
-    notes_parts = []
-    if notes and notes != 'なし':
-        notes_parts.append(notes)
+    cell_parts = []
     if overflow:
         logger.info("[WRITE-01] activity overflow rows=%d, folding %d to notes", len(activities), len(overflow))
         overflow_lines = '\n'.join(f"{t} {c}".strip() for t, c in overflow)
-        notes_parts.append(f"【続き】\n{overflow_lines}")
-    if notes_parts:
-        data.append({"range": _sheet_range(sheet_title, f"B{_NOTES_ROW}"), "values": [[_sanitize_cell('\n'.join(notes_parts))]]})
+        cell_parts.append(f"【活動の続き】\n{overflow_lines}")
+    if notes and notes != 'なし':
+        cell_parts.append(f"【共有事項】\n{notes}")
+    if cell_parts:
+        data.append({"range": _sheet_range(sheet_title, f"B{_NOTES_ROW}"), "values": [[_sanitize_cell('\n'.join(cell_parts))]]})
 
     url = f"https://sheets.googleapis.com/v4/spreadsheets/{spreadsheet_id}/values:batchUpdate"
     resp = _http_retry('post', url, headers=_json_headers(token),
@@ -1030,7 +1045,7 @@ def _call_gemini_summary(activities_text: str) -> str:
         return ''
 
 
-def _process_weekly_summary_for_member(row: list, week_dates: list) -> None:
+def _process_weekly_summary_for_member(row: list, week_dates: list, token: str) -> None:
     name           = row[0] if len(row) > 0 else ''
     line_id        = row[2] if len(row) > 2 else ''
     spreadsheet_id = extract_spreadsheet_id(row[3] if len(row) > 3 else '')
@@ -1039,7 +1054,6 @@ def _process_weekly_summary_for_member(row: list, week_dates: list) -> None:
         return
 
     try:
-        token     = get_sheets_token()
         titles    = set(_get_spreadsheet_sheet_titles(spreadsheet_id, token))
         recorded  = []
         missing   = []
@@ -1182,7 +1196,7 @@ def weekly_summary():
     now_jst    = datetime.now(JST)
     week_dates = _get_week_dates(now_jst)
     for row in members:
-        _executor.submit(_process_weekly_summary_for_member, row, week_dates)
+        _executor.submit(_process_weekly_summary_for_member, row, week_dates, token)
     return {'status': 'ok', 'members': len(members)}, 200
 
 @app.route('/register', methods=['POST', 'OPTIONS'])
