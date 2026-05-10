@@ -16,7 +16,8 @@ def _sheet_range(sheet_title: str, cell: str) -> str:
     """シート名とセル位置から安全なA1記法を返す。不正なシート名は ValueError。"""
     if not _SAFE_SHEET_TITLE_RE.match(sheet_title):
         raise ValueError(f"Invalid sheet title: {sheet_title!r}")
-    return f"'{sheet_title}'!{cell}"
+    escaped = sheet_title.replace("'", "''")
+    return f"'{escaped}'!{cell}"
 
 
 def extract_spreadsheet_id(value: str | None) -> str:

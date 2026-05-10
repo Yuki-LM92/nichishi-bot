@@ -30,7 +30,7 @@ steps:
       - '-c'
       - |
         pip install bandit==1.9.4 --quiet &&
-        bandit -r main.py utils.py -l -i --exit-zero
+        bandit -r main.py utils.py -l -i
 
   # ── Step 4: Unit Test + Coverage ──────────────────────────
   # 純粋関数のユニットテストを実行し、カバレッジを計測する

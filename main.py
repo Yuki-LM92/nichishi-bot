@@ -1,6 +1,7 @@
 import os
 import re
 import json
+import hmac
 import base64
 import time
 import threading
@@ -42,6 +43,9 @@ TEMPLATE_SPREADSHEET_ID     = os.environ.get('TEMPLATE_SPREADSHEET_ID', '')
 ADMIN_EMAIL                 = os.environ.get('ADMIN_EMAIL', '')
 GEMINI_MODEL                = os.environ.get('GEMINI_MODEL', 'gemini-2.5-flash')
 SCHEDULER_SECRET            = os.environ.get('SCHEDULER_SECRET', '').strip()
+
+MAX_AUDIO_BYTES = 20 * 1024 * 1024  # 20 MB
+MAX_IMAGE_BYTES = 10 * 1024 * 1024  # 10 MB
 
 logging.basicConfig(level=logging.INFO, format='%(levelname)s %(name)s %(message)s')
 logger = logging.getLogger(__name__)
@@ -1184,7 +1188,7 @@ def health():
 @app.route('/weekly_summary', methods=['POST'])
 def weekly_summary():
     auth = request.headers.get('Authorization', '')
-    if not SCHEDULER_SECRET or auth != f'Bearer {SCHEDULER_SECRET}':
+    if not SCHEDULER_SECRET or not hmac.compare_digest(auth, f'Bearer {SCHEDULER_SECRET}'):
         abort(401)
     try:
         token   = get_sheets_token()
@@ -1246,8 +1250,7 @@ def register():
                 requests.post(SLACK_WEBHOOK_URL, json={
                     "text": (
                         f"📝 *新規メンバーが登録しました*\n\n"
-                        f"お名前：{name}\n"
-                        f"メール：{email}\n\n"
+                        f"お名前：{name}\n\n"
                         "スプレッドシートを準備してマスタースプシのC列にURLを貼り付けてください。"
                     )
                 }, timeout=10)
@@ -1416,6 +1419,11 @@ def handle_image(event):
         reply_text(event.reply_token, "⚠️ 写真の取得に失敗しました（PHO-01）。\nもう一度送ってください。")
         return
 
+    if len(image_bytes) > MAX_IMAGE_BYTES:
+        logger.warning("[PHO-02] image too large size=%d user=%s", len(image_bytes), user_id)
+        reply_text(event.reply_token, "⚠️ 写真のサイズが大きすぎます（PHO-02）。\n10MB以下の写真を送ってください。")
+        return
+
     reply_text(event.reply_token, "📸 写真を受け取りました！アップロード中です...")
 
     # Drive アップロードはバックグラウンドで実行（reply token 失効を回避）
@@ -1453,6 +1461,12 @@ def handle_audio(event):
         logger.error("[AUD-01] get_message_content error: %s", e)
         reply_text(event.reply_token, "⚠️ 音声の取得に失敗しました（AUD-01）。\nもう一度送ってください。")
         return
+
+    if len(audio_bytes) > MAX_AUDIO_BYTES:
+        logger.warning("[AUD-02] audio too large size=%d user=%s", len(audio_bytes), user_id)
+        reply_text(event.reply_token, "⚠️ 音声ファイルが大きすぎます（AUD-02）。\n短めの録音を送ってください。")
+        return
+
     audio_b64 = base64.b64encode(audio_bytes).decode()
 
     # すぐに受付メッセージを返信（LINEのWebhookタイムアウト対策）
