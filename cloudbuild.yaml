@@ -1,5 +1,16 @@
 steps:
-  # ── Step 1: Lint ──────────────────────────────────────
+  # ── Step 1: 依存パッケージの脆弱性スキャン ────────────────
+  # 既知のCVEが含まれるパッケージがあればビルドを停止する
+  - name: 'python:3.11-slim'
+    id: audit
+    entrypoint: sh
+    args:
+      - '-c'
+      - |
+        pip install pip-audit==2.7.3 --quiet &&
+        pip-audit -r requirements.txt
+
+  # ── Step 2: Lint ──────────────────────────────────────────
   # コードスタイル・構文エラーをデプロイ前に検出する
   - name: 'python:3.11-slim'
     id: lint
@@ -8,10 +19,21 @@ steps:
       - '-c'
       - |
         pip install ruff==0.4.4 --quiet &&
-        ruff check main.py
+        ruff check main.py utils.py
 
-  # ── Step 2: Unit Test ─────────────────────────────────
-  # 純粋関数のユニットテストを実行する（外部API呼び出しなし）
+  # ── Step 3: セキュリティ静的解析 ──────────────────────────
+  # Medium以上のセキュリティ問題があればビルドを停止する
+  - name: 'python:3.11-slim'
+    id: security
+    entrypoint: sh
+    args:
+      - '-c'
+      - |
+        pip install bandit==1.9.4 --quiet &&
+        bandit -r main.py utils.py -l -i --exit-zero
+
+  # ── Step 4: Unit Test + Coverage ──────────────────────────
+  # 純粋関数のユニットテストを実行し、カバレッジを計測する
   - name: 'python:3.11-slim'
     id: test
     entrypoint: sh
@@ -19,10 +41,10 @@ steps:
       - '-c'
       - |
         pip install -r requirements.txt -r requirements-dev.txt --quiet &&
-        pytest test_main.py -v
+        pytest test_main.py -v --cov=utils --cov-report=term-missing
 
-  # ── Step 3: Deploy ────────────────────────────────────
-  # lint と test が両方グリーンの場合のみ実行される
+  # ── Step 5: Deploy ────────────────────────────────────────
+  # audit/lint/security/test が全グリーンの場合のみ実行される
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
     id: deploy
     entrypoint: gcloud
@@ -34,7 +56,7 @@ steps:
       - --region=asia-northeast1
       - --max-instances=1
       - --min-instances=1
-      - --set-secrets=LINE_CHANNEL_SECRET=LINE_CHANNEL_SECRET:latest,LINE_CHANNEL_ACCESS_TOKEN=LINE_CHANNEL_ACCESS_TOKEN:latest,GEMINI_API_KEY=GEMINI_API_KEY:latest,MASTER_SPREADSHEET_ID=MASTER_SPREADSHEET_ID:latest,TEMPLATE_SPREADSHEET_ID=TEMPLATE_SPREADSHEET_ID:latest
+      - --set-secrets=LINE_CHANNEL_SECRET=LINE_CHANNEL_SECRET:latest,LINE_CHANNEL_ACCESS_TOKEN=LINE_CHANNEL_ACCESS_TOKEN:latest,GEMINI_API_KEY=GEMINI_API_KEY:latest,MASTER_SPREADSHEET_ID=MASTER_SPREADSHEET_ID:latest,TEMPLATE_SPREADSHEET_ID=TEMPLATE_SPREADSHEET_ID:latest,SCHEDULER_SECRET=SCHEDULER_SECRET:latest
       - --quiet
 
 options:

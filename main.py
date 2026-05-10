@@ -8,7 +8,7 @@ import logging
 import concurrent.futures
 import requests
 import calendar
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from flask import Flask, request, abort
 from linebot.v3 import WebhookHandler
 from linebot.v3.exceptions import InvalidSignatureError
@@ -23,6 +23,11 @@ from linebot.v3.webhooks import (
 )
 import google.auth
 import google.auth.transport.requests
+from utils import (
+    _sanitize_cell, _sheet_range, extract_spreadsheet_id,
+    extract_date, extract_notes, _is_emoji_only, is_valid_email,
+    _get_week_dates,
+)
 
 app = Flask(__name__)
 
@@ -36,6 +41,7 @@ RICHMENU_UNREGISTERED       = os.environ.get('RICHMENU_UNREGISTERED', '')
 TEMPLATE_SPREADSHEET_ID     = os.environ.get('TEMPLATE_SPREADSHEET_ID', '')
 ADMIN_EMAIL                 = os.environ.get('ADMIN_EMAIL', '')
 GEMINI_MODEL                = os.environ.get('GEMINI_MODEL', 'gemini-2.5-flash')
+SCHEDULER_SECRET            = os.environ.get('SCHEDULER_SECRET', '').strip()
 
 logging.basicConfig(level=logging.INFO, format='%(levelname)s %(name)s %(message)s')
 logger = logging.getLogger(__name__)
@@ -47,7 +53,7 @@ handler = WebhookHandler(LINE_CHANNEL_SECRET)
 pending: dict = {}
 _session_cache: dict = {}
 pending_cancel: set = set()
-_token_cache: dict = {'token': None, 'expires_at': 0.0}
+_token_cache: dict = {'token': None, 'expires_at': 0.0}  # nosec B105
 _members_cache: dict = {'data': None, 'ts': 0.0}
 _setup_done: bool = False
 
@@ -77,12 +83,7 @@ _ACT_MAX_ROWS  = 7
 _NOTES_ROW     = 17
 
 _SAFE_FILE_ID_RE    = re.compile(r'^[A-Za-z0-9_-]+$')
-_SAFE_SHEET_TITLE_RE = re.compile(r'^\d{1,2}月\d{1,2}日$')
-
-def _sheet_range(sheet_title: str, cell: str) -> str:
-    if not _SAFE_SHEET_TITLE_RE.match(sheet_title):
-        raise ValueError(f"Invalid sheet title: {sheet_title!r}")
-    return f"'{sheet_title}'!{cell}"
+JST                 = timezone(timedelta(hours=9))
 
 _REPORT_FORMAT = """
 📅 日付：（言及があれば。なければ空欄）
@@ -175,10 +176,20 @@ def _auth_headers(token: str) -> dict:
 def _json_headers(token: str) -> dict:
     return {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
 
-def _sanitize_cell(value: str) -> str:
-    """スプレッドシートインジェクション防止: 数式起動文字を無効化する。"""
-    s = str(value) if value else ''
-    return ("'" + s) if s and s[0] in ('=', '+', '-', '@', '\t', '\r') else s
+def _http_retry(method: str, url: str, *, headers: dict,
+                max_retries: int = 3, backoff: float = 1.0, **kwargs) -> requests.Response:
+    """Sheets/Drive API の 429/5xx に対して exponential backoff でリトライする。"""
+    resp = None
+    for attempt in range(max_retries):
+        resp = requests.request(method, url, headers=headers, **kwargs)
+        if resp.status_code == 429 or resp.status_code >= 500:
+            if attempt < max_retries - 1:
+                wait = backoff * (2 ** attempt)
+                logger.warning("[HTTP] status=%s retry=%d wait=%.1fs", resp.status_code, attempt + 1, wait)
+                time.sleep(wait)
+                continue
+        return resp
+    return resp  # type: ignore[return-value]
 
 # ========== Session state (メモリ+スプシ永続化) ==========
 
@@ -322,12 +333,6 @@ def get_all_members(token: str) -> list:
         _members_cache['ts'] = time.time()
     return rows
 
-def extract_spreadsheet_id(value: str) -> str:
-    if not value:
-        return ''
-    m = re.search(r'/spreadsheets/d/([a-zA-Z0-9_-]+)', value)
-    return m.group(1) if m else value
-
 def get_member(user_id: str, token: str) -> dict | None:
     for row in get_all_members(token):
         if len(row) > 2 and row[2] == user_id:
@@ -380,7 +385,7 @@ def create_user_spreadsheet(name: str, email: str, token: str) -> tuple:
                 timeout=15
             )
         except Exception as e:
-            logger.warning("[REG-04] share permission failed email=%s: %s", share_email, e)
+            logger.warning("[REG-04] share permission failed domain=%s: %s", share_email.split('@')[-1], e)
     spreadsheet_url = f'https://docs.google.com/spreadsheets/d/{file_id}/edit'
     return file_id, spreadsheet_url
 
@@ -388,10 +393,13 @@ def get_template_sheet_id(spreadsheet_id: str, token: str) -> int | None:
     url = f"https://sheets.googleapis.com/v4/spreadsheets/{spreadsheet_id}"
     resp = requests.get(url, headers=_auth_headers(token), timeout=15)
     if not resp.ok:
-        raise ValueError(f"スプシ取得失敗 status={resp.status_code}")
+        logger.error("[REC-06] get_template_sheet_id failed id=%s... status=%s body=%s",
+                     spreadsheet_id[:20], resp.status_code, resp.text[:500])
+        return None
     for sheet in resp.json().get('sheets', []):
         if sheet['properties']['title'] == TEMPLATE_SHEET_NAME:
             return sheet['properties']['sheetId']
+    logger.warning("[REC-07] template sheet not found in spreadsheet id=%s...", spreadsheet_id[:20])
     return None
 
 def copy_template(spreadsheet_id: str, template_id: int, new_title: str, token: str) -> None:
@@ -423,9 +431,9 @@ def write_to_sheet(spreadsheet_id: str, sheet_title: str, name: str,
             notes = line.replace('📣 共有事項：', '').strip()
         elif mode == 'act' and line.startswith('・'):
             item = line.lstrip('・').strip()
-            m = re.match(r'\[(.+?)\]\s*(.*)', item)
+            m = re.match(r'((?:\d{2}:\d{2}|--:--)\s*[～~]\s*(?:\d{2}:\d{2}|--:--))\s+(.*)', item)
             if m:
-                activities.append((m.group(1), m.group(2)))
+                activities.append((m.group(1).strip(), m.group(2).strip()))
             else:
                 activities.append(('', item))
         elif mode == 'notes' and line:
@@ -451,8 +459,8 @@ def write_to_sheet(spreadsheet_id: str, sheet_title: str, name: str,
         data.append({"range": _sheet_range(sheet_title, f"B{_NOTES_ROW}"), "values": [[_sanitize_cell('\n'.join(notes_parts))]]})
 
     url = f"https://sheets.googleapis.com/v4/spreadsheets/{spreadsheet_id}/values:batchUpdate"
-    resp = requests.post(url, json={"valueInputOption": "RAW", "data": data},
-                        headers=_json_headers(token), timeout=15)
+    resp = _http_retry('post', url, headers=_json_headers(token),
+                       json={"valueInputOption": "RAW", "data": data}, timeout=15)
     resp.raise_for_status()
 
 PHOTO_CELL = 'F2'
@@ -493,20 +501,6 @@ def upload_photo_to_drive(image_bytes: bytes, filename: str, token: str) -> str:
                      file_id, perm_resp.status_code)
     return file_id
 
-def extract_date(structured_text: str) -> tuple:
-    for line in structured_text.split('\n'):
-        line = line.strip()
-        if line.startswith('📅'):
-            date_str = line.replace('📅 日付：', '').strip()
-            m = re.search(r'(\d{1,2})[/月](\d{1,2})', date_str)
-            if m:
-                mo, dy = int(m.group(1)), int(m.group(2))
-                max_day = calendar.monthrange(datetime.now().year, mo)[1] if 1 <= mo <= 12 else 0
-                if 1 <= mo <= 12 and 1 <= dy <= max_day:
-                    return mo, dy
-    today = datetime.now()
-    return today.month, today.day
-
 def record_to_sheet(user_id: str, structured_text: str) -> tuple:
     token = get_sheets_token()
     member = get_member(user_id, token)
@@ -524,18 +518,6 @@ def record_to_sheet(user_id: str, structured_text: str) -> tuple:
     return sheet_title, name
 
 # ========== Slack ==========
-
-def extract_notes(structured_text: str) -> str:
-    notes = ''
-    mode = None
-    for line in structured_text.split('\n'):
-        line = line.strip()
-        if line.startswith('📣'):
-            mode = 'notes'
-            notes = line.replace('📣 共有事項：', '').strip()
-        elif mode == 'notes' and line:
-            notes += '\n' + line
-    return notes
 
 def send_to_slack(member_name: str, sheet_title: str, structured_text: str) -> None:
     if not SLACK_WEBHOOK_URL:
@@ -623,10 +605,6 @@ def save_feedback(user_id: str, category: str, message: str, token: str) -> None
             logger.warning("[FB-02] slack admin notify failed: %s", e)
 
 # ========== Chitchat QA ==========
-
-def _is_emoji_only(text: str) -> bool:
-    """日本語・英数字を含まない（絵文字・記号のみ）場合 True を返す。"""
-    return not re.search(r'[ぁ-んァ-ン一-龯\u4E00-\u9FFFa-zA-Z0-9]', text)
 
 def try_chitchat_reply(user_id: str, text: str, reply_token: str, token: str) -> bool:
     """
@@ -997,6 +975,122 @@ def push_text(user_id: str, text: str) -> None:
             )
         )
 
+# ========== Weekly Summary ==========
+
+_DAY_JP = {0: '月', 1: '火', 2: '水', 3: '木', 4: '金'}
+
+_SUMMARY_PROMPT = (
+    "あなたは地域おこし協力隊の週次日誌サマリーを作成するアシスタントです。\n"
+    "以下の活動記録を読んで、200字以内で今週の活動を簡潔にまとめてください。\n"
+    "箇条書きではなく、1〜2文の自然な文章で書いてください。\n\n"
+)
+
+
+def _get_spreadsheet_sheet_titles(spreadsheet_id: str, token: str) -> list[str]:
+    url = (f"https://sheets.googleapis.com/v4/spreadsheets/{spreadsheet_id}"
+           f"?fields=sheets.properties.title")
+    resp = requests.get(url, headers=_auth_headers(token), timeout=15)
+    if not resp.ok:
+        logger.warning("[SUMMARY] get sheet titles failed id=%s status=%s",
+                       spreadsheet_id[:8], resp.status_code)
+        return []
+    return [s['properties']['title'] for s in resp.json().get('sheets', [])]
+
+
+def _read_day_activities(spreadsheet_id: str, sheet_title: str, token: str) -> str:
+    end_row = _ACT_START_ROW + _ACT_MAX_ROWS - 1
+    range_str = _sheet_range(sheet_title, f"A{_ACT_START_ROW}:B{end_row}")
+    url = (f"https://sheets.googleapis.com/v4/spreadsheets/{spreadsheet_id}"
+           f"/values/{range_str}")
+    resp = requests.get(url, headers=_auth_headers(token), timeout=15)
+    if not resp.ok:
+        return ''
+    lines = []
+    for row in resp.json().get('values', []):
+        time_str = row[0].strip() if len(row) > 0 else ''
+        content = row[1].strip() if len(row) > 1 else ''
+        if content:
+            prefix = f"・{time_str} " if time_str else "・"
+            lines.append(prefix + content)
+    return '\n'.join(lines)
+
+
+def _call_gemini_summary(activities_text: str) -> str:
+    payload = {"contents": [{"parts": [{"text": _SUMMARY_PROMPT + activities_text}]}]}
+    try:
+        return _call_gemini(payload, timeout=30)
+    except Exception as e:
+        logger.warning("[SUMMARY-01] gemini summary error: %s", e)
+        return ''
+
+
+def _process_weekly_summary_for_member(row: list, week_dates: list) -> None:
+    name           = row[0] if len(row) > 0 else ''
+    line_id        = row[2] if len(row) > 2 else ''
+    spreadsheet_id = extract_spreadsheet_id(row[3] if len(row) > 3 else '')
+
+    if not line_id or not spreadsheet_id:
+        return
+
+    try:
+        token     = get_sheets_token()
+        titles    = set(_get_spreadsheet_sheet_titles(spreadsheet_id, token))
+        recorded  = []
+        missing   = []
+        day_texts = []
+
+        for d in week_dates:
+            sheet_title = f"{d.month}月{d.day}日"
+            if sheet_title in titles:
+                recorded.append(d)
+                activities = _read_day_activities(spreadsheet_id, sheet_title, token)
+                if activities:
+                    day_texts.append(
+                        f"【{d.month}/{d.day}（{_DAY_JP[d.weekday()]}）】\n{activities}"
+                    )
+            else:
+                missing.append(d)
+
+        first, last = week_dates[0], week_dates[-1]
+        period = f"（{first.month}月{first.day}日〜{last.month}月{last.day}日）"
+
+        if not recorded:
+            msg = (
+                f"📅 今週の日誌サマリー\n{period}\n\n"
+                "今週はまだ日誌の記録がありません📭\n\n"
+                "音声入力なら1〜2分で完了できます🎤\n"
+                "来週もよろしくお願いします！"
+            )
+        else:
+            recorded_str  = '・'.join(_DAY_JP[d.weekday()] for d in recorded)
+            recorded_line = f"✅ 記録済み：{recorded_str}（{len(recorded)}日）"
+            missing_line  = ''
+            if missing:
+                missing_parts = '・'.join(
+                    f"{_DAY_JP[d.weekday()]}（{d.month}/{d.day}）" for d in missing
+                )
+                missing_line = f"\n📭 未記録：{missing_parts}"
+
+            summary_line = ''
+            if day_texts:
+                gemini_summary = _call_gemini_summary('\n\n'.join(day_texts))
+                if gemini_summary:
+                    summary_line = f"\n\n今週の活動まとめ：\n{gemini_summary}"
+
+            msg = (
+                f"📅 今週の日誌サマリー\n{period}\n\n"
+                f"{recorded_line}{missing_line}"
+                f"{summary_line}\n\n"
+                "来週もよろしくお願いします！🌱"
+            )
+
+        push_text(line_id, msg)
+        logger.info("[SUMMARY] sent user_id=%s name=%s recorded=%d",
+                    line_id[:8], name, len(recorded))
+    except Exception as e:
+        logger.error("[SUMMARY-02] failed name=%s: %s", name, e)
+
+
 # ========== Messages ==========
 
 WELCOME_MESSAGE = """\
@@ -1035,9 +1129,6 @@ WAITING_SHEET_MESSAGE = (
 
 # ========== Validation ==========
 
-def is_valid_email(email: str) -> bool:
-    return bool(re.match(r'^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$', email))
-
 # ========== Flask routes ==========
 
 @app.before_request
@@ -1066,7 +1157,25 @@ def webhook():
 
 @app.route('/health', methods=['GET'])
 def health():
-    return 'OK'
+    return {'status': 'ok', 'ts': datetime.utcnow().isoformat() + 'Z'}, 200
+
+@app.route('/weekly_summary', methods=['POST'])
+def weekly_summary():
+    auth = request.headers.get('Authorization', '')
+    if not SCHEDULER_SECRET or auth != f'Bearer {SCHEDULER_SECRET}':
+        abort(401)
+    try:
+        token   = get_sheets_token()
+        members = get_all_members(token)
+    except Exception as e:
+        logger.error("[SUMMARY] get_all_members failed: %s", e)
+        return {'error': 'members unavailable'}, 500
+
+    now_jst    = datetime.now(JST)
+    week_dates = _get_week_dates(now_jst)
+    for row in members:
+        _executor.submit(_process_weekly_summary_for_member, row, week_dates)
+    return {'status': 'ok', 'members': len(members)}, 200
 
 @app.route('/register', methods=['POST', 'OPTIONS'])
 def register():
@@ -1120,8 +1229,8 @@ def register():
                         "スプレッドシートを準備してマスタースプシのC列にURLを貼り付けてください。"
                     )
                 }, timeout=10)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning("[REG-05] slack notify failed: %s", e)
 
         if line_user_id:
             try:
@@ -1136,8 +1245,8 @@ def register():
                     f"{GUIDE_URL}"
                 )
                 push_text(line_user_id, msg)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning("[REG-06] push message failed user=%s: %s", line_user_id, e)
             link_rich_menu(line_user_id, RICHMENU_REGISTERED)
 
         return cors_response({'status': 'ok'})
@@ -1557,4 +1666,4 @@ def handle_postback(event):
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 8000))
-    app.run(host='0.0.0.0', port=port)
+    app.run(host='0.0.0.0', port=port)  # nosec B104 – Cloud Run requires binding all interfaces

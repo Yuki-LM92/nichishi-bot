@@ -74,6 +74,7 @@ def create_registered_image():
 
     f_num  = load_font(160)
     f_main = load_font(100)
+    f_sub  = load_font(65)
 
     # ---- 上段：2分割 ----
     top_cells = [

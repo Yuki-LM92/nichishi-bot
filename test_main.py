@@ -5,7 +5,7 @@ main.py の純粋関数に対するユニットテスト。
 import pytest
 from datetime import datetime
 
-from main import (
+from utils import (
     _sanitize_cell,
     _sheet_range,
     _is_emoji_only,
@@ -13,6 +13,7 @@ from main import (
     extract_notes,
     extract_spreadsheet_id,
     is_valid_email,
+    _get_week_dates,
 )
 
 
@@ -153,6 +154,13 @@ class TestExtractSpreadsheetId:
     def test_none_returns_empty(self):
         assert extract_spreadsheet_id(None) == ""
 
+    def test_url_with_surrounding_whitespace(self):
+        url = "  https://docs.google.com/spreadsheets/d/abc123xyz-_ABCDEF/edit  "
+        assert extract_spreadsheet_id(url) == "abc123xyz-_ABCDEF"
+
+    def test_bare_id_with_whitespace(self):
+        assert extract_spreadsheet_id("  abc123  ") == "abc123"
+
 
 # ──────────────────────────────────────────
 # _is_emoji_only
@@ -204,3 +212,40 @@ class TestExtractNotes:
     def test_notes_nashi(self):
         text = "📣 共有事項：なし"
         assert extract_notes(text) == "なし"
+
+
+# ──────────────────────────────────────────
+# _get_week_dates
+# ──────────────────────────────────────────
+class TestGetWeekDates:
+    def test_returns_five_days(self):
+        ref = datetime(2026, 5, 6)  # Wednesday
+        dates = _get_week_dates(ref)
+        assert len(dates) == 5
+
+    def test_starts_on_monday(self):
+        ref = datetime(2026, 5, 6)  # Wednesday
+        dates = _get_week_dates(ref)
+        assert dates[0].weekday() == 0  # Monday
+
+    def test_ends_on_friday(self):
+        ref = datetime(2026, 5, 6)  # Wednesday
+        dates = _get_week_dates(ref)
+        assert dates[-1].weekday() == 4  # Friday
+
+    def test_monday_ref_returns_same_week(self):
+        ref = datetime(2026, 5, 4)  # Monday
+        dates = _get_week_dates(ref)
+        assert dates[0] == datetime(2026, 5, 4)
+        assert dates[4] == datetime(2026, 5, 8)
+
+    def test_friday_ref_returns_same_week(self):
+        ref = datetime(2026, 5, 8)  # Friday
+        dates = _get_week_dates(ref)
+        assert dates[0] == datetime(2026, 5, 4)
+        assert dates[4] == datetime(2026, 5, 8)
+
+    def test_none_ref_returns_current_week(self):
+        dates = _get_week_dates(None)
+        assert len(dates) == 5
+        assert dates[0].weekday() == 0
