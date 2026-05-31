@@ -373,7 +373,7 @@ def copy_template(spreadsheet_id: str, template_id: int, new_title: str, token: 
 
 
 def write_to_sheet(spreadsheet_id: str, sheet_title: str, name: str,
-                   structured_text: str, month: int, day: int, token: str) -> None:
+                   structured_text: str, month: int, day: int, token: str) -> int:
     year = datetime.now().year
     reiwa_year = year - 2018
 
@@ -427,23 +427,25 @@ def write_to_sheet(spreadsheet_id: str, sheet_title: str, name: str,
     resp = _http_retry('post', url, headers=_json_headers(token),
                        json={"valueInputOption": "RAW", "data": data}, timeout=15)
     resp.raise_for_status()
+    return len(overflow)
 
 
 def record_to_sheet(user_id: str, structured_text: str) -> tuple:
+    """Returns (sheet_title, member_name, overflow_count). sheet_title is None on failure."""
     token = get_sheets_token()
     member = get_member(user_id, token)
     if not member or not member.get('spreadsheet_id'):
-        return None, None
+        return None, None, 0
     spreadsheet_id = member['spreadsheet_id']
     name = member['name']
     month, day = extract_date(structured_text)
     sheet_title = f"{month}月{day}日"
     template_id = get_template_sheet_id(spreadsheet_id, token)
     if template_id is None:
-        return None, None
+        return None, None, 0
     copy_template(spreadsheet_id, template_id, sheet_title, token)
-    write_to_sheet(spreadsheet_id, sheet_title, name, structured_text, month, day, token)
-    return sheet_title, name
+    overflow = write_to_sheet(spreadsheet_id, sheet_title, name, structured_text, month, day, token)
+    return sheet_title, name, overflow
 
 
 # ══════════════════════════════════════════════════════════════════════════

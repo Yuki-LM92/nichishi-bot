@@ -21,6 +21,8 @@ from linebot.v3.exceptions import InvalidSignatureError
 from linebot.v3.webhooks import (
     MessageEvent, AudioMessageContent, PostbackEvent,
     TextMessageContent, FollowEvent, ImageMessageContent,
+    StickerMessageContent, VideoMessageContent,
+    FileMessageContent, LocationMessageContent,
 )
 from linebot.v3.messaging import TextMessage, QuickReply, QuickReplyItem, PostbackAction
 
@@ -381,8 +383,27 @@ def try_chitchat_reply(user_id: str, text: str, reply_token: str, token: str) ->
     if re.search(r'(日誌|記録).{0,10}(修正|直したい|書き直し|変えたい)', t):
         reply_text(reply_token,
                    "確認画面が出ている場合は「✏️ 修正する」をタップしてください。\n"
-                   "すでに記録済みの場合は、スプレッドシートを直接編集するか、\n"
-                   "改めて日誌を送ってください。")
+                   "記録後に気づいた場合は、成功メッセージの「✏️ 内容を修正する」をタップしてください。")
+        return True
+
+    if re.search(r'今日の(日誌|記録)|今日.*記録.*見|記録.*確認|日誌.*確認|今日.*送った', t):
+        member = get_member(user_id, token)
+        if not member or not member.get('spreadsheet_id'):
+            reply_text(reply_token, config.NOT_REGISTERED_MESSAGE)
+            return True
+        today = datetime.now(config.JST)
+        sheet_title = f"{today.month}月{today.day}日"
+        try:
+            activities = read_day_activities(member['spreadsheet_id'], sheet_title, token)
+            if activities:
+                reply_text(reply_token, f"📋 {sheet_title}の記録\n\n{activities}")
+            else:
+                reply_text(reply_token,
+                           f"📋 {sheet_title}の記録はまだありません。\n"
+                           "音声かテキストで日誌を送ってください🎤")
+        except Exception:
+            reply_text(reply_token,
+                       "⚠️ 記録の取得中にエラーが発生しました。\nしばらくしてからお試しください。")
         return True
 
     # ── カテゴリJ: 感情・反応 ────────────────────────────────────
@@ -604,8 +625,14 @@ def handle_text(event):
         else:
             m = re.search(r'(\d{1,2})[/月](\d{1,2})', text)
             if not m:
-                reply_text(event.reply_token,
-                           "日付を入力してください。\n例：4/10、4月10日、今日、昨日")
+                push_message_object(user_id, TextMessage(
+                    text="📸 写真登録中です。\n日付を入力してください。\n例：4/10、4月10日、今日、昨日\n\n"
+                         "日誌を送りたい場合は先にキャンセルしてください。",
+                    quick_reply=QuickReply(items=[
+                        QuickReplyItem(action=PostbackAction(
+                            label='⛔ キャンセル', data='cancel_photo')),
+                    ])
+                ))
                 return
             month, day = int(m.group(1)), int(m.group(2))
             max_day = calendar.monthrange(today.year, month)[1] if 1 <= month <= 12 else 0
@@ -751,6 +778,30 @@ def handle_audio(event):
     _executor.submit(_process_input_async, user_id, audio_b64, True)
 
 
+@handler.add(MessageEvent, message=StickerMessageContent)
+def handle_sticker(event):
+    reply_text(event.reply_token,
+               "😊 日誌はいつでも音声かテキストで送ってください！")
+
+
+@handler.add(MessageEvent, message=VideoMessageContent)
+def handle_video(event):
+    reply_text(event.reply_token,
+               "動画はこちらでは処理できません📵\n日誌は音声かテキストで送ってください🎤")
+
+
+@handler.add(MessageEvent, message=FileMessageContent)
+def handle_file(event):
+    reply_text(event.reply_token,
+               "ファイルはこちらでは処理できません📵\n日誌は音声かテキストで送ってください🎤")
+
+
+@handler.add(MessageEvent, message=LocationMessageContent)
+def handle_location(event):
+    reply_text(event.reply_token,
+               "位置情報はこちらでは処理できません📵\n日誌は音声かテキストで送ってください🎤")
+
+
 # ══════════════════════════════════════════════════════════════════════════
 # Postback handlers
 # ══════════════════════════════════════════════════════════════════════════
@@ -770,11 +821,25 @@ def _pb_confirm_yes(event):
                    "⚠️ 記録する内容が見つかりませんでした。\nもう一度音声を送ってください。")
         return
     try:
-        sheet_name, member_name = record_to_sheet(user_id, structured)
+        sheet_name, member_name, overflow = record_to_sheet(user_id, structured)
         if sheet_name:
             pending_del(user_id, token)
-            reply_text(event.reply_token,
-                       f"✅ {sheet_name}の日報をスプレッドシートに記録しました！")
+            try:
+                session_set(user_id, 'last_record',
+                            {'text': structured, 'sheet_name': sheet_name}, token)
+            except Exception:
+                pass
+            msg = f"✅ {sheet_name}の日報をスプレッドシートに記録しました！"
+            if overflow:
+                msg += (f"\n\n⚠️ 活動が{config.ACT_MAX_ROWS}件を超えたため、"
+                        f"{overflow}件分は備考欄に追記しました。")
+            push_message_object(user_id, TextMessage(
+                text=msg,
+                quick_reply=QuickReply(items=[
+                    QuickReplyItem(action=PostbackAction(
+                        label='✏️ 内容を修正する', data='revise_last_record')),
+                ])
+            ))
             send_to_slack(member_name, sheet_name, structured)
         else:
             reply_text(event.reply_token,
@@ -949,6 +1014,37 @@ def _pb_cancel_photo(event):
     reply_text(event.reply_token, "キャンセルしました。")
 
 
+def _pb_revise_last_record(event):
+    user_id = event.source.user_id
+    try:
+        token = get_sheets_token()
+        session_type, session_data = session_get(user_id, token)
+    except Exception as e:
+        logger.error("[REC-08] revise_last_record token error: %s", e)
+        reply_text(event.reply_token,
+                   "⚠️ エラーが発生しました。もう一度お試しください。")
+        return
+
+    if session_type != 'last_record' or not session_data:
+        reply_text(event.reply_token,
+                   "⚠️ 修正できる記録が見つかりません。\n新しく日誌を送ってください。")
+        return
+
+    original = session_data.get('text', '')
+    try:
+        pending_set(user_id, original, token)
+        session_set(user_id, 'correction', {}, token)
+    except Exception:
+        with _cache_lock:
+            pending[user_id] = original
+        _session_cache[user_id] = {'type': 'correction', 'data': {}, 'ts': 0.0}
+
+    reply_text(event.reply_token,
+               "✏️ 修正内容をテキストで送ってください。\n"
+               "例）「午後の作業時間を3時間に変えて」\n"
+               "　　「日付を4月10日に変えて」")
+
+
 def _pb_open_spreadsheet(event):
     user_id = event.source.user_id
     try:
@@ -980,6 +1076,7 @@ _POSTBACK_DISPATCH = {
     'add_photo':              _pb_add_photo,
     'cancel_photo':           _pb_cancel_photo,
     'open_spreadsheet':       _pb_open_spreadsheet,
+    'revise_last_record':     _pb_revise_last_record,
 }
 
 
