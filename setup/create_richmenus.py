@@ -68,31 +68,33 @@ def create_unregistered_image():
     return img_to_buf(img)
 
 def create_registered_image():
-    """登録済み: 2段構成（上段2ボタン・下段3ボタン）"""
+    """登録済み: 2段構成（上段3ボタン・下段3ボタン）"""
     img = Image.new('RGB', (W2, H2), (248, 253, 248))
     draw = ImageDraw.Draw(img)
 
-    f_num  = load_font(160)
-    f_main = load_font(100)
+    f_num  = load_font(130)
+    f_main = load_font(80)
     f_sub  = load_font(65)
 
-    # ---- 上段：2分割 ----
+    # ---- 上段：3分割 ----
     top_cells = [
         {'num': '1', 'title': '音声で日誌入力', 'accent': (6, 199, 85),   'bg': (230, 248, 236)},
         {'num': '2', 'title': '写真を登録',     'accent': (30, 130, 220), 'bg': (230, 243, 255)},
+        {'num': '3', 'title': 'その他',         'accent': (140, 90, 210), 'bg': (243, 238, 255)},
     ]
-    cell_w_top = W2 // 2
+    cell_w_top = W2 // 3
     for i, cell in enumerate(top_cells):
-        x0, x1 = i * cell_w_top, (i + 1) * cell_w_top
+        x0 = i * cell_w_top
+        x1 = W2 if i == len(top_cells) - 1 else (i + 1) * cell_w_top
         draw.rectangle([x0, 0, x1 - 1, H], fill=cell['bg'])
         draw.rectangle([x0, 0, x1 - 1, 22], fill=cell['accent'])
         if i > 0:
             draw.line([(x0, 22), (x0, H)], fill=(200, 220, 210), width=4)
-        cx = x0 + cell_w_top // 2
+        cx = x0 + (x1 - x0) // 2
         cy = H // 2
-        # 数字を左寄り・タイトルを右寄り
-        draw.text((cx - 220, cy), cell['num'], font=f_num, fill=cell['accent'], anchor='mm')
-        draw.text((cx + 100, cy), cell['title'], font=f_main, fill='#1a1a1a', anchor='mm')
+        # 数字を上・タイトルを下に縦並び
+        draw.text((cx, cy - 90), cell['num'], font=f_num, fill=cell['accent'], anchor='mm')
+        draw.text((cx, cy + 65), cell['title'], font=f_main, fill='#1a1a1a', anchor='mm')
 
     # ---- 区切り線 ----
     draw.line([(0, H), (W2, H)], fill=(200, 215, 205), width=6)
@@ -177,12 +179,16 @@ REGISTERED_DEF = {
     "chatBarText": "メニュー",
     "areas": [
         {
-            "bounds": {"x": 0, "y": 0, "width": 1250, "height": 843},
+            "bounds": {"x": 0, "y": 0, "width": 833, "height": 843},
             "action": {"type": "postback", "label": "音声で日誌入力", "data": "guide_voice"}
         },
         {
-            "bounds": {"x": 1250, "y": 0, "width": 1250, "height": 843},
+            "bounds": {"x": 833, "y": 0, "width": 833, "height": 843},
             "action": {"type": "postback", "label": "写真を登録", "data": "guide_photo"}
+        },
+        {
+            "bounds": {"x": 1666, "y": 0, "width": 834, "height": 843},
+            "action": {"type": "postback", "label": "その他", "data": "other_menu"}
         },
         {
             "bounds": {"x": 0, "y": 843, "width": 833, "height": 843},

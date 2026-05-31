@@ -25,7 +25,7 @@ from linebot.v3.webhooks import (
     StickerMessageContent, VideoMessageContent,
     FileMessageContent, LocationMessageContent,
 )
-from linebot.v3.messaging import TextMessage, QuickReply, QuickReplyItem, PostbackAction
+from linebot.v3.messaging import TextMessage, QuickReply, QuickReplyItem, PostbackAction, URIAction
 
 import config
 from storage import (
@@ -1129,6 +1129,65 @@ def _pb_revise_last_record(event):
                "　　「日付を4月10日に変えて」")
 
 
+def _pb_other_menu(event):
+    push_message_object(event.source.user_id, TextMessage(
+        text="ご利用の機能を選んでください",
+        quick_reply=QuickReply(items=[
+            QuickReplyItem(action=PostbackAction(
+                label='📋 今日の記録を確認', data='check_today_record')),
+            QuickReplyItem(action=PostbackAction(
+                label='📊 今週の記録状況', data='check_weekly_status')),
+            QuickReplyItem(action=URIAction(
+                label='📖 使い方ガイド', uri=config.GUIDE_URL)),
+        ])
+    ))
+
+
+def _pb_check_today_record(event):
+    user_id = event.source.user_id
+    try:
+        token  = get_sheets_token()
+        member = get_member(user_id, token)
+    except Exception as e:
+        logger.error("[CHK-01] check_today_record failed: %s", e)
+        reply_text(event.reply_token,
+                   "⚠️ 一時的なエラーが発生しました。\nしばらくしてからお試しください。")
+        return
+    if not member or not member.get('spreadsheet_id'):
+        reply_text(event.reply_token, config.NOT_REGISTERED_MESSAGE)
+        return
+    today       = datetime.now(config.JST)
+    sheet_title = f"{today.month}月{today.day}日"
+    try:
+        activities = read_day_activities(member['spreadsheet_id'], sheet_title, token)
+        if activities:
+            reply_text(event.reply_token, f"📋 {sheet_title}の記録\n\n{activities}")
+        else:
+            reply_text(event.reply_token,
+                       f"📋 {sheet_title}の記録はまだありません。\n"
+                       "音声かテキストで日誌を送ってください🎤")
+    except Exception:
+        reply_text(event.reply_token,
+                   "⚠️ 記録の取得中にエラーが発生しました。\nしばらくしてからお試しください。")
+
+
+def _pb_check_weekly_status(event):
+    user_id = event.source.user_id
+    try:
+        token  = get_sheets_token()
+        member = get_member(user_id, token)
+    except Exception as e:
+        logger.error("[CHK-02] check_weekly_status failed: %s", e)
+        reply_text(event.reply_token,
+                   "⚠️ 一時的なエラーが発生しました。\nしばらくしてからお試しください。")
+        return
+    if not member or not member.get('spreadsheet_id'):
+        reply_text(event.reply_token, config.NOT_REGISTERED_MESSAGE)
+        return
+    reply_text(event.reply_token, "📊 今週の記録状況を確認中です...")
+    _executor.submit(_process_weekly_status_async, user_id, token)
+
+
 def _pb_open_spreadsheet(event):
     user_id = event.source.user_id
     try:
@@ -1161,6 +1220,9 @@ _POSTBACK_DISPATCH = {
     'cancel_photo':           _pb_cancel_photo,
     'open_spreadsheet':       _pb_open_spreadsheet,
     'revise_last_record':     _pb_revise_last_record,
+    'other_menu':             _pb_other_menu,
+    'check_today_record':     _pb_check_today_record,
+    'check_weekly_status':    _pb_check_weekly_status,
 }
 
 
