@@ -72,15 +72,31 @@ def create_registered_image():
     img = Image.new('RGB', (W2, H2), (248, 253, 248))
     draw = ImageDraw.Draw(img)
 
-    f_num  = load_font(130)
-    f_main = load_font(80)
-    f_sub  = load_font(65)
+    f_num  = load_font(120)
+    f_main = load_font(65)
+    f_sub  = load_font(58)
+    f_step = load_font(48)
 
     # ---- 上段：3分割 ----
     top_cells = [
-        {'num': '1', 'title': '音声で日誌入力', 'accent': (6, 199, 85),   'bg': (230, 248, 236)},
-        {'num': '2', 'title': '写真を登録',     'accent': (30, 130, 220), 'bg': (230, 243, 255)},
-        {'num': '3', 'title': 'その他',         'accent': (140, 90, 210), 'bg': (243, 238, 255)},
+        {
+            'num': '1', 'title': '音声で日誌入力',
+            'items': ['マイクを長押し', '話す（15秒〜2分）', '指を離して送信', '「はい」で記録完了'],
+            'item_label': 'Step',
+            'accent': (6, 199, 85),   'bg': (230, 248, 236),
+        },
+        {
+            'num': '2', 'title': '写真を登録',
+            'items': ['このボタンをタップ', '日付を入力', '写真を送信', '「追加する」で完了'],
+            'item_label': 'Step',
+            'accent': (30, 130, 220), 'bg': (230, 243, 255),
+        },
+        {
+            'num': '3', 'title': 'その他の機能',
+            'items': ['今日の記録を確認', '今週の記録状況', 'スプレッドシート', '使い方ガイド'],
+            'item_label': '・',
+            'accent': (140, 90, 210), 'bg': (243, 238, 255),
+        },
     ]
     cell_w_top = W2 // 3
     for i, cell in enumerate(top_cells):
@@ -90,11 +106,15 @@ def create_registered_image():
         draw.rectangle([x0, 0, x1 - 1, 22], fill=cell['accent'])
         if i > 0:
             draw.line([(x0, 22), (x0, H)], fill=(200, 220, 210), width=4)
-        cx = x0 + (x1 - x0) // 2
-        cy = H // 2
-        # 数字を上・タイトルを下に縦並び
-        draw.text((cx, cy - 90), cell['num'], font=f_num, fill=cell['accent'], anchor='mm')
-        draw.text((cx, cy + 65), cell['title'], font=f_main, fill='#1a1a1a', anchor='mm')
+        # 数字バッジ＋タイトル（横並び）
+        draw.text((x0 + 75, 130), cell['num'],   font=f_num,  fill=cell['accent'], anchor='mm')
+        draw.text((x0 + 175, 130), cell['title'], font=f_main, fill='#1a1a1a',      anchor='lm')
+        # 操作案内 or 機能一覧
+        step_y = 270
+        for j, item in enumerate(cell['items']):
+            label = f"{cell['item_label']}{j+1}  {item}" if cell['item_label'] == 'Step' else f"{cell['item_label']} {item}"
+            draw.text((x0 + 55, step_y), label, font=f_step, fill='#555')
+            step_y += 108
 
     # ---- 区切り線 ----
     draw.line([(0, H), (W2, H)], fill=(200, 215, 205), width=6)
