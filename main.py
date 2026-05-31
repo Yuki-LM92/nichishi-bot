@@ -94,6 +94,38 @@ def _process_input_async(user_id: str, content, is_audio: bool) -> None:
     push_confirm(user_id, structured)
 
 
+def _process_weekly_status_async(user_id: str, token: str) -> None:
+    try:
+        member = get_member(user_id, token)
+        if not member or not member.get('spreadsheet_id'):
+            push_text(user_id, config.NOT_REGISTERED_MESSAGE)
+            return
+        now_jst    = datetime.now(config.JST)
+        week_dates = _get_week_dates(now_jst)
+        titles     = set(get_spreadsheet_sheet_titles(member['spreadsheet_id'], token))
+        recorded, missing = [], []
+        for d in week_dates:
+            (recorded if f"{d.month}月{d.day}日" in titles else missing).append(d)
+
+        first, last = week_dates[0], week_dates[-1]
+        period = f"{first.month}月{first.day}日〜{last.month}月{last.day}日"
+        if not recorded:
+            push_text(user_id,
+                      f"📊 今週（{period}）の記録\n\nまだ記録がありません📭\n"
+                      "音声かテキストで日誌を送ってください🎤")
+        else:
+            rec_str  = '・'.join(f"{_DAY_JP[d.weekday()]}({d.month}/{d.day})" for d in recorded)
+            miss_str = ('・'.join(f"{_DAY_JP[d.weekday()]}({d.month}/{d.day})" for d in missing)
+                        if missing else 'なし')
+            push_text(user_id,
+                      f"📊 今週（{period}）の記録状況\n\n"
+                      f"✅ 記録済み：{rec_str}\n"
+                      f"📭 未記録：{miss_str}")
+    except Exception as e:
+        logger.error("[STATUS-01] weekly status error user=%s: %s", user_id[:8], e)
+        push_text(user_id, "⚠️ 記録状況の取得中にエラーが発生しました。\nしばらくしてからお試しください。")
+
+
 def _process_feedback_async(user_id: str, category: str, message: str) -> None:
     try:
         token = get_sheets_token()
@@ -405,6 +437,15 @@ def try_chitchat_reply(user_id: str, text: str, reply_token: str, token: str) ->
         except Exception:
             reply_text(reply_token,
                        "⚠️ 記録の取得中にエラーが発生しました。\nしばらくしてからお試しください。")
+        return True
+
+    if re.search(r'今週.*(記録|日誌)|記録.*今週|何日.*記録|記録.*何日', t):
+        member = get_member(user_id, token)
+        if not member or not member.get('spreadsheet_id'):
+            reply_text(reply_token, config.NOT_REGISTERED_MESSAGE)
+            return True
+        reply_text(reply_token, "📊 今週の記録状況を確認中です...")
+        _executor.submit(_process_weekly_status_async, user_id, token)
         return True
 
     # ── カテゴリJ: 感情・反応 ────────────────────────────────────
@@ -839,7 +880,7 @@ def _pb_confirm_yes(event):
                    "⚠️ 記録する内容が見つかりませんでした。\nもう一度音声を送ってください。")
         return
     try:
-        sheet_name, member_name, overflow = record_to_sheet(user_id, structured)
+        sheet_name, member_name, overflow, is_new = record_to_sheet(user_id, structured)
         if sheet_name:
             pending_del(user_id, token)
             try:
@@ -848,6 +889,8 @@ def _pb_confirm_yes(event):
             except Exception:
                 pass
             msg = f"✅ {sheet_name}の日報をスプレッドシートに記録しました！"
+            if not is_new:
+                msg += "\n\n📝 この日の日報は既に存在したため、内容を上書きしました。"
             if overflow:
                 msg += (f"\n\n⚠️ 活動が{config.ACT_MAX_ROWS}件を超えたため、"
                         f"{overflow}件分は備考欄に追記しました。")

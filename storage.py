@@ -359,7 +359,8 @@ def get_template_sheet_id(spreadsheet_id: str, token: str) -> int | None:
     return None
 
 
-def copy_template(spreadsheet_id: str, template_id: int, new_title: str, token: str) -> None:
+def copy_template(spreadsheet_id: str, template_id: int, new_title: str, token: str) -> bool:
+    """シートをテンプレートからコピーする。True=新規作成、False=既存シートを上書き。"""
     url = f"https://sheets.googleapis.com/v4/spreadsheets/{spreadsheet_id}:batchUpdate"
     payload = {"requests": [{"duplicateSheet": {
         "sourceSheetId": template_id,
@@ -368,8 +369,9 @@ def copy_template(spreadsheet_id: str, template_id: int, new_title: str, token: 
     }}]}
     resp = _http_retry('post', url, json=payload, headers=_json_headers(token), timeout=15)
     if resp.status_code == 400 and 'already exists' in resp.text:
-        return
+        return False
     resp.raise_for_status()
+    return True
 
 
 def write_to_sheet(spreadsheet_id: str, sheet_title: str, name: str,
@@ -418,9 +420,8 @@ def write_to_sheet(spreadsheet_id: str, sheet_title: str, name: str,
         cell_parts.append(f"【活動の続き】\n{overflow_lines}")
     if notes and notes != 'なし':
         cell_parts.append(f"【共有事項】\n{notes}")
-    if cell_parts:
-        data.append({"range": _sheet_range(sheet_title, f"B{config.NOTES_ROW}"),
-                     "values": [[_sanitize_cell('\n'.join(cell_parts))]]})
+    data.append({"range": _sheet_range(sheet_title, f"B{config.NOTES_ROW}"),
+                 "values": [[_sanitize_cell('\n'.join(cell_parts)) if cell_parts else '']]})
 
     url = (f"https://sheets.googleapis.com/v4/spreadsheets/{spreadsheet_id}"
            f"/values:batchUpdate")
@@ -431,21 +432,21 @@ def write_to_sheet(spreadsheet_id: str, sheet_title: str, name: str,
 
 
 def record_to_sheet(user_id: str, structured_text: str) -> tuple:
-    """Returns (sheet_title, member_name, overflow_count). sheet_title is None on failure."""
+    """Returns (sheet_title, member_name, overflow_count, is_new_sheet). sheet_title is None on failure."""
     token = get_sheets_token()
     member = get_member(user_id, token)
     if not member or not member.get('spreadsheet_id'):
-        return None, None, 0
+        return None, None, 0, False
     spreadsheet_id = member['spreadsheet_id']
     name = member['name']
     month, day = extract_date(structured_text)
     sheet_title = f"{month}月{day}日"
     template_id = get_template_sheet_id(spreadsheet_id, token)
     if template_id is None:
-        return None, None, 0
-    copy_template(spreadsheet_id, template_id, sheet_title, token)
+        return None, None, 0, False
+    is_new = copy_template(spreadsheet_id, template_id, sheet_title, token)
     overflow = write_to_sheet(spreadsheet_id, sheet_title, name, structured_text, month, day, token)
-    return sheet_title, name, overflow
+    return sheet_title, name, overflow, is_new
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -592,18 +593,25 @@ def get_spreadsheet_sheet_titles(spreadsheet_id: str, token: str) -> list[str]:
 
 
 def read_day_activities(spreadsheet_id: str, sheet_title: str, token: str) -> str:
-    end_row = config.ACT_START_ROW + config.ACT_MAX_ROWS - 1
+    end_row = config.NOTES_ROW
     range_str = _sheet_range(sheet_title, f"A{config.ACT_START_ROW}:B{end_row}")
     url = (f"https://sheets.googleapis.com/v4/spreadsheets/{spreadsheet_id}"
            f"/values/{range_str}")
     resp = _http_retry('get', url, headers=_auth_headers(token), timeout=15)
     if not resp.ok:
         return ''
+    values = resp.json().get('values', [])
+    act_rows = values[:config.ACT_MAX_ROWS]
     lines = []
-    for row in resp.json().get('values', []):
+    for row in act_rows:
         time_str = row[0].strip() if len(row) > 0 else ''
         content  = row[1].strip() if len(row) > 1 else ''
         if content:
             prefix = f"・{time_str} " if time_str else "・"
             lines.append(prefix + content)
+    if len(values) > config.ACT_MAX_ROWS:
+        notes_row = values[config.ACT_MAX_ROWS]
+        notes_cell = notes_row[1].strip() if len(notes_row) > 1 else ''
+        if notes_cell:
+            lines.append(f"\n📣 {notes_cell}")
     return '\n'.join(lines)
