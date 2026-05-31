@@ -172,6 +172,26 @@ def session_del(user_id: str, token: str) -> None:
             return
 
 
+def cleanup_stale_sessions(token: str) -> int:
+    """TTL切れのセッション行を空行で上書きし、クリーンアップした件数を返す。"""
+    cleaned = 0
+    now = time.time()
+    for row_num, row in _session_rows(token):
+        ts = float(row[3]) if len(row) > 3 and row[3] else 0.0
+        if now - ts > config.SESSION_TTL:
+            url = (f"https://sheets.googleapis.com/v4/spreadsheets/{config.MASTER_SPREADSHEET_ID}"
+                   f"/values/{config.SESSION_SHEET}!A{row_num}:D{row_num}?valueInputOption=RAW")
+            resp = _http_retry('put', url, json={"values": [['', '', '', '']]},
+                               headers=_json_headers(token), timeout=15)
+            if resp.ok:
+                cleaned += 1
+            else:
+                logger.warning("[SES-03] cleanup row=%d failed status=%s", row_num, resp.status_code)
+    if cleaned:
+        logger.info("[SES-03] cleaned %d stale session rows", cleaned)
+    return cleaned
+
+
 def ensure_session_sheet(token: str) -> None:
     """session_states シートが存在しない場合は作成する。"""
     url = f"https://sheets.googleapis.com/v4/spreadsheets/{config.MASTER_SPREADSHEET_ID}"

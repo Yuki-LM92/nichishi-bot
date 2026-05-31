@@ -37,7 +37,7 @@ from storage import (
     upload_photo_to_drive, write_photo_url_to_sheet,
     send_to_slack, save_feedback,
     get_spreadsheet_sheet_titles, read_day_activities,
-    get_all_members,
+    get_all_members, cleanup_stale_sessions,
     pending, _session_cache, pending_cancel,
     _cancel_lock, _cache_lock, _SAFE_FILE_ID_RE,
 )
@@ -92,6 +92,15 @@ def _process_input_async(user_id: str, content, is_audio: bool) -> None:
             pending[user_id] = structured
 
     push_confirm(user_id, structured)
+
+
+def _cleanup_sessions_bg(token: str) -> None:
+    try:
+        n = cleanup_stale_sessions(token)
+        if n:
+            logger.info("[CLEANUP] removed %d stale session rows", n)
+    except Exception as e:
+        logger.warning("[CLEANUP] cleanup_stale_sessions failed: %s", e)
 
 
 def _process_weekly_status_async(user_id: str, token: str) -> None:
@@ -503,7 +512,16 @@ def webhook():
 
 @app.route('/health', methods=['GET'])
 def health():
-    return {'status': 'ok', 'ts': datetime.utcnow().isoformat() + 'Z'}, 200
+    ts = datetime.utcnow().isoformat() + 'Z'
+    try:
+        get_sheets_token()
+        sheets_status = 'ok'
+    except Exception as e:
+        logger.error("[HEALTH] sheets token error: %s", e)
+        sheets_status = 'error'
+    status = 'ok' if sheets_status == 'ok' else 'degraded'
+    code   = 200 if status == 'ok' else 503
+    return {'status': status, 'sheets': sheets_status, 'ts': ts}, code
 
 
 @app.route('/weekly_summary', methods=['POST'])
@@ -518,10 +536,15 @@ def weekly_summary():
         logger.error("[SUMMARY] get_all_members failed: %s", e)
         return {'error': 'members unavailable'}, 500
 
+    if not members:
+        logger.warning("[SUMMARY] members list is empty — check メンバーsheet in MASTER_SPREADSHEET_ID")
+
     now_jst    = datetime.now(config.JST)
     week_dates = _get_week_dates(now_jst)
     for row in members:
         _executor.submit(_process_weekly_summary_for_member, row, week_dates, token)
+
+    _executor.submit(_cleanup_sessions_bg, token)
     return {'status': 'ok', 'members': len(members)}, 200
 
 
