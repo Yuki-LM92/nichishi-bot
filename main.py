@@ -197,12 +197,13 @@ def _http_retry(method: str, url: str, *, headers: dict,
 
 # ========== Session state (メモリ+スプシ永続化) ==========
 
-def _session_rows(token: str) -> list:
+def _session_rows(token: str) -> list[tuple[int, list]]:
+    """スプレッドシートの実行番号と行データのタプルリストを返す。空行は除外。"""
     url = f"https://sheets.googleapis.com/v4/spreadsheets/{MASTER_SPREADSHEET_ID}/values/{SESSION_SHEET}!A:D"
-    resp = requests.get(url, headers=_auth_headers(token), timeout=15)
-    if resp.status_code != 200:
+    resp = _http_retry('get', url, headers=_auth_headers(token), timeout=15)
+    if not resp.ok:
         return []
-    return [r for r in resp.json().get('values', []) if r and r[0]]
+    return [(i + 1, r) for i, r in enumerate(resp.json().get('values', [])) if r and r[0]]
 
 def session_get(user_id: str, token: str) -> tuple:
     """セッション状態を返す。キャッシュ優先、TTL切れならNone。"""
@@ -212,7 +213,7 @@ def session_get(user_id: str, token: str) -> tuple:
             return cached['type'], cached['data']
         _session_cache.pop(user_id, None)
 
-    for row in _session_rows(token):
+    for _, row in _session_rows(token):
         if len(row) >= 2 and row[0] == user_id:
             state_type = row[1]
             if not state_type:
@@ -232,10 +233,8 @@ def session_set(user_id: str, state_type: str, data: dict, token: str) -> None:
     with _cache_lock:
         _session_cache[user_id] = {'type': state_type, 'data': data, 'ts': ts}
     values = [[user_id, state_type, json.dumps(data), str(ts)]]
-    rows = _session_rows(token)
-    for i, row in enumerate(rows):
-        if row and row[0] == user_id:
-            row_num = i + 1
+    for row_num, row in _session_rows(token):
+        if row[0] == user_id:
             url = (f"https://sheets.googleapis.com/v4/spreadsheets/{MASTER_SPREADSHEET_ID}"
                    f"/values/{SESSION_SHEET}!A{row_num}:D{row_num}?valueInputOption=RAW")
             resp = _http_retry('put', url, json={"values": values}, headers=_json_headers(token), timeout=15)
@@ -252,10 +251,8 @@ def session_del(user_id: str, token: str) -> None:
     """セッション状態を削除（メモリ+スプシ）。"""
     with _cache_lock:
         _session_cache.pop(user_id, None)
-    rows = _session_rows(token)
-    for i, row in enumerate(rows):
-        if row and row[0] == user_id:
-            row_num = i + 1
+    for row_num, row in _session_rows(token):
+        if row[0] == user_id:
             url = (f"https://sheets.googleapis.com/v4/spreadsheets/{MASTER_SPREADSHEET_ID}"
                    f"/values/{SESSION_SHEET}!A{row_num}:D{row_num}?valueInputOption=RAW")
             resp = _http_retry('put', url, json={"values": [['', '', '', '']]},
@@ -279,18 +276,19 @@ def ensure_session_sheet(token: str) -> None:
 
 # ========== Sheets API ==========
 
-def _pending_rows(token: str) -> list:
+def _pending_rows(token: str) -> list[tuple[int, list]]:
+    """スプレッドシートの実行番号と行データのタプルリストを返す。空行は除外。"""
     url = f"https://sheets.googleapis.com/v4/spreadsheets/{MASTER_SPREADSHEET_ID}/values/{PENDING_SHEET}!A:B"
-    resp = requests.get(url, headers=_auth_headers(token), timeout=15)
-    if resp.status_code != 200:
+    resp = _http_retry('get', url, headers=_auth_headers(token), timeout=15)
+    if not resp.ok:
         return []
-    return [r for r in resp.json().get('values', []) if r and r[0]]
+    return [(i + 1, r) for i, r in enumerate(resp.json().get('values', [])) if r and r[0]]
 
 def pending_get(user_id: str, token: str) -> str:
     with _cache_lock:
         if user_id in pending:
             return pending[user_id]
-    for row in _pending_rows(token):
+    for _, row in _pending_rows(token):
         if len(row) >= 2 and row[0] == user_id and row[1]:
             with _cache_lock:
                 pending[user_id] = row[1]
@@ -300,10 +298,8 @@ def pending_get(user_id: str, token: str) -> str:
 def pending_set(user_id: str, text: str, token: str) -> None:
     with _cache_lock:
         pending[user_id] = text
-    rows = _pending_rows(token)
-    for i, row in enumerate(rows):
-        if row and row[0] == user_id:
-            row_num = i + 1
+    for row_num, row in _pending_rows(token):
+        if row[0] == user_id:
             url = (f"https://sheets.googleapis.com/v4/spreadsheets/{MASTER_SPREADSHEET_ID}"
                    f"/values/{PENDING_SHEET}!A{row_num}:B{row_num}?valueInputOption=RAW")
             resp = _http_retry('put', url, json={"values": [[user_id, text]]},
@@ -321,10 +317,8 @@ def pending_set(user_id: str, text: str, token: str) -> None:
 def pending_del(user_id: str, token: str) -> None:
     with _cache_lock:
         pending.pop(user_id, None)
-    rows = _pending_rows(token)
-    for i, row in enumerate(rows):
-        if row and row[0] == user_id:
-            row_num = i + 1
+    for row_num, row in _pending_rows(token):
+        if row[0] == user_id:
             url = (f"https://sheets.googleapis.com/v4/spreadsheets/{MASTER_SPREADSHEET_ID}"
                    f"/values/{PENDING_SHEET}!A{row_num}:B{row_num}?valueInputOption=RAW")
             resp = _http_retry('put', url, json={"values": [['', '']]},
@@ -377,7 +371,7 @@ def append_member(user_id: str, name: str, email: str, token: str, spreadsheet_u
         f"/values/メンバー!A:E:append?valueInputOption=RAW&insertDataOption=INSERT_ROWS"
     )
     payload = {"values": [[_sanitize_cell(name), _sanitize_cell(email), user_id, spreadsheet_url, now]]}
-    resp = requests.post(url, json=payload, headers=_json_headers(token), timeout=15)
+    resp = _http_retry('post', url, json=payload, headers=_json_headers(token), timeout=15)
     if not resp.ok:
         logger.error("[REG-02] append_member status=%s body=%s", resp.status_code, resp.text[:500])
     resp.raise_for_status()
@@ -432,7 +426,7 @@ def copy_template(spreadsheet_id: str, template_id: int, new_title: str, token: 
         "newSheetName": new_title,
         "insertSheetIndex": 1
     }}]}
-    resp = requests.post(url, json=payload, headers=_json_headers(token), timeout=15)
+    resp = _http_retry('post', url, json=payload, headers=_json_headers(token), timeout=15)
     if resp.status_code == 400 and 'already exists' in resp.text:
         return
     resp.raise_for_status()
@@ -924,7 +918,14 @@ def _process_input_async(user_id: str, content, is_audio: bool) -> None:
         with _cache_lock:
             pending[user_id] = structured
 
-    _send_confirm_push(user_id, structured)
+    try:
+        _send_confirm_push(user_id, structured)
+    except Exception as e:
+        logger.error("[REC-06] _send_confirm_push failed user=%s: %s", user_id, e)
+        try:
+            push_text(user_id, "⚠️ メッセージ送信に失敗しました（REC-06）。\nもう一度音声を送ってください。")
+        except Exception:
+            pass
 
 def _process_feedback_async(user_id: str, category: str, message: str) -> None:
     """フィードバック保存をバックグラウンドで実行する（スレッド用）。"""
@@ -956,7 +957,14 @@ def _process_correction_async(user_id: str, original: str, correction_text: str)
         with _cache_lock:
             pending[user_id] = structured
 
-    _send_confirm_push(user_id, structured)
+    try:
+        _send_confirm_push(user_id, structured)
+    except Exception as e:
+        logger.error("[REC-06] _send_confirm_push failed user=%s: %s", user_id, e)
+        try:
+            push_text(user_id, "⚠️ メッセージ送信に失敗しました（REC-06）。\nもう一度音声を送ってください。")
+        except Exception:
+            pass
 
 def _process_image_async(user_id: str, image_bytes: bytes, filename: str,
                          month: int, day: int, token: str) -> None:
@@ -1395,8 +1403,14 @@ def handle_text(event):
 def handle_image(event):
     user_id = event.source.user_id
 
-    token = get_sheets_token()
-    member = get_member(user_id, token)
+    try:
+        token = get_sheets_token()
+        member = get_member(user_id, token)
+    except Exception as e:
+        logger.error("[PHO-01] token/member fetch failed: %s", e)
+        reply_text(event.reply_token, "⚠️ 一時的なエラーが発生しました。\nしばらくしてからもう一度お試しください。")
+        return
+
     if not member or not member.get('spreadsheet_id'):
         reply_text(event.reply_token, NOT_REGISTERED_MESSAGE)
         return
@@ -1435,8 +1449,13 @@ def handle_image(event):
 def handle_audio(event):
     user_id = event.source.user_id
 
-    token = get_sheets_token()
-    member = get_member(user_id, token)
+    try:
+        token = get_sheets_token()
+        member = get_member(user_id, token)
+    except Exception as e:
+        logger.error("[AUD-01] token/member fetch failed: %s", e)
+        reply_text(event.reply_token, "⚠️ 一時的なエラーが発生しました。\nしばらくしてからもう一度お試しください。")
+        return
 
     if member is None:
         reply_text(event.reply_token, NOT_REGISTERED_MESSAGE)
