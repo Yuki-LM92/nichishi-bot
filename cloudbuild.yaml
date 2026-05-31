@@ -19,7 +19,7 @@ steps:
       - '-c'
       - |
         pip install ruff==0.4.4 --quiet &&
-        ruff check main.py utils.py
+        ruff check main.py utils.py config.py storage.py ai.py messaging.py
 
   # ── Step 3: セキュリティ静的解析 ──────────────────────────
   # Medium以上のセキュリティ問題があればビルドを停止する
@@ -30,7 +30,7 @@ steps:
       - '-c'
       - |
         pip install bandit==1.9.4 --quiet &&
-        bandit -r main.py utils.py -l -i
+        bandit -r main.py utils.py config.py storage.py ai.py messaging.py -l -i
 
   # ── Step 4: Unit Test + Coverage ──────────────────────────
   # 純粋関数のユニットテストを実行し、カバレッジを計測する
