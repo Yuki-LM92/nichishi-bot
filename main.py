@@ -14,6 +14,7 @@ import calendar
 import threading
 import logging
 import concurrent.futures
+import requests
 from datetime import datetime, timedelta
 
 from flask import Flask, request, abort
@@ -527,9 +528,8 @@ def register():
         append_member(line_user_id, name, email, token, spreadsheet_url or '')
 
         if config.SLACK_WEBHOOK_URL:
-            import requests as req
             try:
-                req.post(config.SLACK_WEBHOOK_URL, json={
+                requests.post(config.SLACK_WEBHOOK_URL, json={
                     "text": (
                         f"📝 *新規メンバーが登録しました*\n\n"
                         f"お名前：{name}\n\n"
@@ -645,6 +645,20 @@ def handle_text(event):
                    f"✅ {month}月{day}日ですね！\nでは登録する写真を送ってください📸")
         return
 
+    # 写真登録：写真送信待ち（テキストが来た場合はエスケープ提示）
+    if session_type == 'photo_ready':
+        month = session_data.get('month', '?')
+        day   = session_data.get('day', '?')
+        push_message_object(user_id, TextMessage(
+            text=f"📸 {month}月{day}日の写真を送るのをお待ちしています。\n\n"
+                 "日誌を送りたい場合は先にキャンセルしてください。",
+            quick_reply=QuickReply(items=[
+                QuickReplyItem(action=PostbackAction(
+                    label='⛔ キャンセル', data='cancel_photo')),
+            ])
+        ))
+        return
+
     # フィードバック収集モード
     if session_type == 'feedback':
         category = session_data.get('category', '')
@@ -680,6 +694,10 @@ def handle_text(event):
         return
 
     link_rich_menu(user_id, config.RICHMENU_REGISTERED)
+    try:
+        session_del(user_id, token)
+    except Exception:
+        _session_cache.pop(user_id, None)
     reply_text(event.reply_token,
                "📝 テキストを受け取りました！\nAIが内容を整理しています...\n（10〜30秒ほどかかります）")
     _executor.submit(_process_input_async, user_id, text, False)

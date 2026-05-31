@@ -105,6 +105,14 @@ def _call_gemini(payload: dict, timeout: int = 60) -> str:
     return text
 
 
+def _validate_structured(text: str, context: str) -> str:
+    """日報フォーマットの最低限のマーカーが含まれているか検証する。"""
+    if '⏰' not in text:
+        logger.warning("[GEMINI] %s: structured output missing ⏰ marker. raw=%s", context, text[:200])
+        raise ValueError(f"Gemini {context}: output missing activity marker")
+    return text
+
+
 def call_gemini_audio(audio_b64: str) -> str:
     today = datetime.now().strftime('%Y年%m月%d日')
     prompt = _AUDIO_PROMPT + f"\n※ 日付の言及がない場合は今日の日付（{today}）を使用してください。"
@@ -112,14 +120,14 @@ def call_gemini_audio(audio_b64: str) -> str:
         {"inline_data": {"mime_type": "audio/mp4", "data": audio_b64}},
         {"text": prompt},
     ]}]}
-    return _call_gemini(payload, timeout=120)
+    return _validate_structured(_call_gemini(payload, timeout=120), 'audio')
 
 
 def call_gemini_text(text: str) -> str:
     today = datetime.now().strftime('%Y年%m月%d日')
     date_note = f"※ 日付の言及がない場合は今日の日付（{today}）を使用してください。\n\n"
     payload = {"contents": [{"parts": [{"text": _TEXT_PROMPT + date_note + text}]}]}
-    return _call_gemini(payload, timeout=60)
+    return _validate_structured(_call_gemini(payload, timeout=60), 'text')
 
 
 def call_gemini_correction(original: str, correction: str) -> str:
@@ -130,7 +138,7 @@ def call_gemini_correction(original: str, correction: str) -> str:
         + "\n\n---\n修正指示：\n" + correction + "\n"
     )
     payload = {"contents": [{"parts": [{"text": prompt}]}]}
-    return _call_gemini(payload, timeout=60)
+    return _validate_structured(_call_gemini(payload, timeout=60), 'correction')
 
 
 def call_gemini_summary(activities_text: str) -> str:
